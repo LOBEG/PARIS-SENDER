@@ -1,8 +1,8 @@
 """Service exports."""
 
-from .deliverability import DeliverabilityService
-from .delivery import DeliveryProvider, DeliveryResult, DeliveryService, NonSmtpDeliveryProvider, OutboundMessage, SMTPConfig, SMTPDeliveryProvider
-from .domain import (
+from backend.services.deliverability import DeliverabilityService
+from backend.services.delivery import DeliveryProvider, DeliveryResult, DeliveryService, NonSmtpDeliveryProvider, OutboundMessage, SMTPConfig, SMTPDeliveryProvider
+from backend.services.domain import (
     DomainError,
     DomainService,
     build_dkim_record,
@@ -11,11 +11,11 @@ from .domain import (
     generate_dkim_keypair,
     is_valid_domain,
 )
-from .health import HealthMonitorService, ServerProbe, SmtplibProbe, start_health_monitor, stop_health_monitor
-from .logging_service import LoggingService, start_log_archiver, stop_log_archiver
-from .mime import build_mime_message
-from .security import SecurityService
-from .warmup import WarmupDecision, WarmupService, start_warmup_scheduler, stop_warmup_scheduler
+from backend.services.health import HealthMonitorService, ServerProbe, SmtplibProbe, start_health_monitor, stop_health_monitor
+from backend.services.logging_service import LoggingService, start_log_archiver, stop_log_archiver
+from backend.services.mime import build_mime_message
+from backend.services.security import SecurityService
+from backend.services.warmup import WarmupDecision, WarmupService, start_warmup_scheduler, stop_warmup_scheduler
 
 __all__ = [
     "DeliverabilityService",

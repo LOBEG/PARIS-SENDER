@@ -30,7 +30,7 @@ from backend.services import (
 from backend.validators import AutograbService
 from backend.validators.compose import analyze_compose
 
-from .security import AuthMiddleware, RateLimitMiddleware
+from backend.api.security import AuthMiddleware, RateLimitMiddleware
 
 
 class CampaignCreate(BaseModel):

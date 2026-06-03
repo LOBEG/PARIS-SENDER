@@ -1,11 +1,11 @@
 """Backend model exports."""
 
-from .deliverability import DeliverabilityScore, ScoreComponent
-from .domain import DnsRecord, Domain, DomainStatus, RecordType
-from .health import ComponentHealth, DomainHealthSummary, HealthServer, HealthStatus, QueueDepth, ServerHealth
-from .ledger import Campaign, Event, EventType, Message, Recipient, Status
-from .logging import LogComponent, LogEntry, LogSeverity
-from .warmup import WarmupConfig, WarmupEventType, WarmupStatus
+from backend.models.deliverability import DeliverabilityScore, ScoreComponent
+from backend.models.domain import DnsRecord, Domain, DomainStatus, RecordType
+from backend.models.health import ComponentHealth, DomainHealthSummary, HealthServer, HealthStatus, QueueDepth, ServerHealth
+from backend.models.ledger import Campaign, Event, EventType, Message, Recipient, Status
+from backend.models.logging import LogComponent, LogEntry, LogSeverity
+from backend.models.warmup import WarmupConfig, WarmupEventType, WarmupStatus
 
 __all__ = [
     "Campaign",
