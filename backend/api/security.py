@@ -46,8 +46,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return _json_error(401, "missing bearer token")
         try:
             claims = _decode_jwt(header.split(" ", 1)[1], self.secret)
-        except ValueError as exc:
-            return _json_error(401, str(exc))
+        except ValueError:
+            return _json_error(401, "invalid or expired token")
         roles = {str(role).lower() for role in claims.get("roles", [])}
         if not _is_allowed(request.method, request.url.path, roles):
             return _json_error(403, "insufficient role")
