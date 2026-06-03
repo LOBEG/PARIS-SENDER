@@ -26,6 +26,34 @@ critical security issues.
   - Re-ran quality gate: compiles; 216 passed / 1 skipped.
   → **Critical security gate cleared. AUTO_ADVANCE unblocked.**
 - **Phase 1 gate validated, proceeding to Phase 2+ foundational scaffolding.**
+- **Phase 3 (Delivery) + Phase 5 (Ledger) foundations:** built alongside the
+  monolith under `backend/` (strangler-fig):
+  - `backend/models/ledger.py` — entities (Campaign, Message, Recipient, Event +
+    Bounce/Open/Click/Unsubscribe) and the full Status enum (QUEUED, PROCESSING,
+    SENT, DELIVERED, OPENED, CLICKED, BOUNCED, FAILED, UNSUBSCRIBED).
+  - `backend/repositories/ledger.py` — sqlite3 LedgerRepository (Postgres-ready,
+    parameterized SQL, `:memory:` support); every event persisted.
+  - `backend/services/delivery.py` — `DeliveryProvider` ABC, `SMTPDeliveryProvider`
+    (DI SMTP factory, secure-by-default TLS), and `DeliveryService` orchestrating
+    QUEUED→PROCESSING→SENT/FAILED with ledger writes. Flow: UI→API→DeliveryService→Provider.
+  - `backend/services/mime.py` — single MIME builder (removes duplication).
+  - `backend/validators/autograb.py` — autograb personalization + Jinja2 render,
+    parity-tested against `test_fixes.py` behaviors.
+  - `backend/api/app.py` — FastAPI app (POST /campaigns, POST /campaigns/{id}/send,
+    GET /campaigns/{id}, GET /health) with injectable provider/ledger.
+  - `tests/` — 10 new tests (ledger, delivery, autograb, api).
+  - Quality gate: all new .py compile; `pytest tests/` = 10 passed;
+    `unittest test_fixes.py` = 216 passed / 1 skipped (no regression).
+  → **Phase 3/5 foundation gate validated.**
+
+## Remaining work (subsequent phases, async)
+
+Phase 2 Electron frontend (12 screens), Phase 4 Domain Manager (DKIM/SPF/DMARC),
+Phase 6 deliverability score engine, Phase 7 WarmupService, Phase 8 Health Monitor,
+Phase 9 LoggingService, Phase 10 remaining hardening (secret scanning, startup
+checks), Phase 11 full test pyramid, Phase 12 monolith retirement + dep cleanup,
+and the final deliverable docs. The monolith remains the live app until each
+capability reaches parity behind the new architecture.
 
 ## Notes
 
