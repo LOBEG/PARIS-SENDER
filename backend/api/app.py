@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from backend.models import Status
 from backend.repositories import DomainRepository, LedgerRepository
 from backend.services import (
+    DeliverabilityService,
     DeliveryProvider,
     DeliveryResult,
     DeliveryService,
@@ -33,6 +34,17 @@ class SendRequest(BaseModel):
 
     recipients: list[str] = Field(..., min_length=1)
     subject: str = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+    sender: str = Field("sender@example.com", min_length=1)
+    html: bool = False
+    non_smtp_delivery: bool = False
+
+
+class PredictRequest(BaseModel):
+    """Request to predict deliverability before sending."""
+
+    recipients: list[str] = Field(default_factory=list)
+    subject: str = Field("", min_length=0)
     content: str = Field(..., min_length=1)
     sender: str = Field("sender@example.com", min_length=1)
     html: bool = False
@@ -89,13 +101,18 @@ def create_app(
     domain_service: DomainService | None = None,
     repository_factory: Callable[[], LedgerRepository] | None = None,
     provider_factory: Callable[[], DeliveryProvider] | None = None,
+    deliverability_service: DeliverabilityService | None = None,
     enforce_verified_domains: bool = True,
+    min_deliverability_score: int = 70,
 ) -> FastAPI:
-    """Create a FastAPI app with injectable ledger, delivery provider, and domains."""
+    """Create a FastAPI app with injectable ledger, delivery, domain, and score services."""
     app = FastAPI(title="Paris Sender Backend")
     repo_singleton = repository or (repository_factory() if repository_factory else LedgerRepository(":memory:"))
     provider_singleton = provider or (provider_factory() if provider_factory else ProviderNotConfigured())
     domain_service_singleton = domain_service or DomainService(domain_repository or DomainRepository(":memory:"))
+    deliverability_singleton = deliverability_service or DeliverabilityService(
+        repo_singleton, domain_service_singleton, threshold=min_deliverability_score
+    )
     autograb = AutograbService()
 
     def get_repository() -> LedgerRepository:
@@ -106,6 +123,9 @@ def create_app(
 
     def get_domain_service() -> DomainService:
         return domain_service_singleton
+
+    def get_deliverability_service() -> DeliverabilityService:
+        return deliverability_singleton
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -123,11 +143,23 @@ def create_app(
         repo: LedgerRepository = Depends(get_repository),
         delivery_provider: DeliveryProvider = Depends(get_provider),
         domains: DomainService = Depends(get_domain_service),
+        deliverability: DeliverabilityService = Depends(get_deliverability_service),
     ) -> dict[str, Any]:
         campaign = repo.get_campaign(campaign_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="campaign not found")
         _enforce_domain(domains, payload.sender, enforce_verified_domains)
+        score = deliverability.predict(
+            _score_content(payload.subject, payload.content),
+            payload.recipients,
+            sender=payload.sender,
+            html=payload.html,
+        )
+        if not score.passed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"deliverability score {score.score} is below required threshold {score.threshold}",
+            )
         service = DeliveryService(repo, delivery_provider)
         receipts = service.send_campaign(
             campaign,
@@ -143,6 +175,37 @@ def create_app(
             "failed": sum(1 for receipt in receipts if not receipt.result.success),
             "messages": [receipt.message.id for receipt in receipts],
         }
+
+    @app.get("/campaigns/{campaign_id}/score")
+    def get_campaign_score(
+        campaign_id: int,
+        content: str | None = None,
+        sender: str | None = None,
+        html: bool = False,
+        repo: LedgerRepository = Depends(get_repository),
+        deliverability: DeliverabilityService = Depends(get_deliverability_service),
+    ) -> dict[str, Any]:
+        campaign = repo.get_campaign(campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        return deliverability.score_campaign(campaign_id, content=content, html=html, sender=sender).to_dict()
+
+    @app.post("/campaigns/{campaign_id}/predict")
+    def predict_campaign(
+        campaign_id: int,
+        payload: PredictRequest,
+        repo: LedgerRepository = Depends(get_repository),
+        deliverability: DeliverabilityService = Depends(get_deliverability_service),
+    ) -> dict[str, Any]:
+        campaign = repo.get_campaign(campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        return deliverability.predict(
+            _score_content(payload.subject, payload.content),
+            payload.recipients,
+            sender=payload.sender,
+            html=payload.html,
+        ).to_dict()
 
     @app.get("/campaigns/{campaign_id}")
     def get_campaign(campaign_id: int, repo: LedgerRepository = Depends(get_repository)) -> dict[str, Any]:
@@ -232,6 +295,11 @@ def create_app(
         return {"id": domain_id, "history": domains.repository.health_history(domain_id)}
 
     return app
+
+
+def _score_content(subject: str, content: str) -> str:
+    subject = subject.strip()
+    return f"{subject}\n\n{content}" if subject else content
 
 
 def _domain_payload(domains: DomainService, domain: Any) -> dict[str, Any]:

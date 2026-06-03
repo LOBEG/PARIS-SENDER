@@ -10,8 +10,9 @@ import Analytics from './pages/Analytics.jsx';
 import Settings from './pages/Settings.jsx';
 import Logs from './pages/Logs.jsx';
 import DomainManager from './pages/DomainManager.jsx';
+import Deliverability from './pages/Deliverability.jsx';
 
-const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains'];
+const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains', 'Deliverability'];
 
 export default function App() {
   const [active, setActive] = useState('Dashboard');
@@ -44,6 +45,7 @@ export default function App() {
       case 'Settings': return <Settings />;
       case 'Logs': return <Logs />;
       case 'Domains': return <DomainManager />;
+      case 'Deliverability': return <Deliverability />;
       default: return <Dashboard onNavigate={setActive} />;
     }
   }, [active]);

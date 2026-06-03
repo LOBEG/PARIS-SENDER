@@ -6,7 +6,8 @@ const icons = {
   Analytics: '▥',
   Settings: '⚙',
   Logs: '☰',
-  Domains: '◎'
+  Domains: '◎',
+  Deliverability: '◉'
 };
 
 export default function Sidebar({ screens, active, onChange }) {

@@ -62,6 +62,8 @@ export const del = (path) => request('DELETE', path);
 export const getHealth = () => get('/health');
 export const createCampaign = (name) => post('/campaigns', { name });
 export const getCampaign = (id) => get(`/campaigns/${encodeURIComponent(id)}`);
+export const getCampaignScore = (id) => get(`/campaigns/${encodeURIComponent(id)}/score`);
+export const predictCampaign = (id, payload) => post(`/campaigns/${encodeURIComponent(id)}/predict`, payload);
 export const sendCampaign = (id, payload) => post(`/campaigns/${encodeURIComponent(id)}/send`, payload);
 export const previewCompose = (payload) => post('/compose/preview', payload);
 export const analyzeCompose = (payload) => post('/compose/analyze', payload);

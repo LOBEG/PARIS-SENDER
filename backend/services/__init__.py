@@ -1,5 +1,6 @@
 """Service exports."""
 
+from .deliverability import DeliverabilityService
 from .delivery import DeliveryProvider, DeliveryResult, DeliveryService, OutboundMessage, SMTPConfig, SMTPDeliveryProvider
 from .domain import (
     DomainError,
@@ -13,6 +14,7 @@ from .domain import (
 from .mime import build_mime_message
 
 __all__ = [
+    "DeliverabilityService",
     "DeliveryProvider",
     "DeliveryResult",
     "DeliveryService",
