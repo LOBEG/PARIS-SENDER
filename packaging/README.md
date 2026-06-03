@@ -8,10 +8,14 @@ Windows installer (`.exe`) or a macOS disk image (`.dmg`).
 
 | File | Purpose |
 | --- | --- |
-| `backend_entry.py` | Frozen entrypoint wrapping `backend.server.main`. |
-| `paris-backend.spec` | PyInstaller spec that bundles the backend into `paris-backend`. |
-| `build_backend.py` | Runs PyInstaller and stages the binary for electron-builder. |
+| `backend_entry.py` | Frozen wrapper that bootstraps `sys.path` and delegates to `backend.main.run`. |
+| `paris-backend.spec` | Backward-compat shim that execs the canonical `../backend.spec`. |
+| `build_backend.py` | Runs PyInstaller (`backend.spec`) and stages the binary for electron-builder. |
 | `requirements-build.txt` | Build-only dependencies (PyInstaller). |
+
+> The canonical PyInstaller spec is `backend.spec` at the repository root. It
+> targets `backend/main.py` — the freeze-safe launcher that writes startup
+> failures to `logs/startup.log` so the packaged executable never exits silently.
 
 ## Build the backend binary
 
@@ -46,3 +50,11 @@ electron-builder in sequence. Installers are written to `electron/out/`.
   launches the bundled `paris-backend` binary on it, waits for `/health`, then
   opens the UI. The backend is terminated when the app quits. The selected port
   is exported via `PARIS_PORT` and read by the preload script.
+
+## Startup logging
+
+`backend/main.py` wraps the whole startup sequence in a `try/except` and writes
+any failure (import error, dependency error, path error, configuration error, or
+hidden exception) with a full stack trace to `logs/startup.log` — located next to
+the executable in a packaged app, or in the repo root when run from source. This
+prevents the "launches briefly then exits with no visible error" failure mode.

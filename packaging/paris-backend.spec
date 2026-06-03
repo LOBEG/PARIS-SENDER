@@ -1,72 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec that bundles the Paris Sender FastAPI backend.
+"""Backward-compatibility shim.
 
-Produces a single self-contained executable named ``paris-backend`` (with the
-platform-appropriate ``.exe`` suffix on Windows). The Electron desktop shell
-launches this binary as a child process and talks to it over loopback HTTP.
-
-Build:
-
-    pip install -r requirements.txt -r packaging/requirements-build.txt
-    pyinstaller packaging/paris-backend.spec --clean --noconfirm
-
-The output binary is written to ``dist/paris-backend`` and is copied into the
-Electron app as an extra resource by electron-builder.
+The canonical PyInstaller spec now lives at the repository root as
+``backend.spec`` (it targets the freeze-safe ``backend/main.py`` entrypoint and
+collects the full set of hidden imports). This file executes that spec so
+existing invocations of ``pyinstaller packaging/paris-backend.spec`` keep
+working and produce an identical ``paris-backend`` executable.
 """
 
-from PyInstaller.utils.hooks import collect_submodules
+import os
 
-# Backend packages and their dynamic dependencies that PyInstaller's static
-# analysis can miss (uvicorn loads its protocol/loop implementations lazily).
-hidden_imports = []
-for package in ("backend", "uvicorn", "fastapi", "starlette", "pydantic", "anyio"):
-    hidden_imports += collect_submodules(package)
+_ROOT = os.path.dirname(SPECPATH)  # noqa: F821 - SPECPATH injected by PyInstaller
+_CANONICAL = os.path.join(_ROOT, "backend.spec")
 
-block_cipher = None
+# The canonical spec resolves the repository root from ``SPECPATH``; point it at
+# the repo root so paths resolve correctly when invoked through this shim.
+SPECPATH = _ROOT  # noqa: F811
 
-a = Analysis(
-    ["backend_entry.py"],
-    pathex=[".."],
-    binaries=[],
-    datas=[],
-    hiddenimports=hidden_imports,
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[
-        # Heavy optional/legacy dependencies that are not needed by the API
-        # server process keep the bundle small.
-        "tkinter",
-        "matplotlib",
-        "selenium",
-        "undetected_chromedriver",
-    ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name="paris-backend",
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
+with open(_CANONICAL, "r", encoding="utf-8") as _fh:
+    exec(compile(_fh.read(), _CANONICAL, "exec"))

@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SPEC = ROOT / "packaging" / "paris-backend.spec"
+# Canonical spec lives at the repository root (targets backend/main.py with the
+# full hidden-import set). packaging/paris-backend.spec remains as a shim.
+SPEC = ROOT / "backend.spec"
 DIST = ROOT / "dist"
 STAGE = ROOT / "electron" / "resources" / "backend"
 

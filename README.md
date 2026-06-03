@@ -95,8 +95,12 @@ To build only the backend executable directly with PyInstaller:
 
 ```bash
 pip install -r requirements.txt -r packaging/requirements-build.txt
-pyinstaller packaging/paris-backend.spec --clean --noconfirm
+pyinstaller backend.spec --clean --noconfirm
 ```
+
+`backend.spec` (repo root) is the canonical spec; it bundles the freeze-safe
+`backend/main.py` launcher with the full hidden-import set.
+`packaging/paris-backend.spec` remains as a shim that execs it.
 
 The PyInstaller binary is staged into `electron/resources/backend/` by
 `packaging/build_backend.py`, and electron-builder bundles it as an extra
@@ -107,6 +111,24 @@ Outputs (written to `electron/out/`):
 
 - **Windows:** `Paris Sender-Setup-<version>.exe`
 - **Mac:** `Paris Sender-<version>.dmg`
+
+### Single-click startup model
+
+Double-clicking the installed app triggers:
+
+```
+Double-click app → backend launches → /health passes → Electron window opens
+```
+
+The Electron main process (`electron/main/backend.js`) spawns the bundled
+backend on a free loopback port and waits for `/health` before opening the
+dashboard — no terminal, no Python install, and no manual launch steps.
+
+### Startup logging / troubleshooting
+
+If the backend ever fails to start, a full stack trace is written to
+`logs/startup.log` (next to the executable in a packaged app, or in the repo
+root when run from source). Startup failures are never swallowed silently.
 
 ## 🔐 Security notes
 
