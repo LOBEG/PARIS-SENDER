@@ -6,7 +6,7 @@
   "main": "main/main.js",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "dev": "concurrently -k \"vite --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build:renderer": "vite build",
     "build:backend": "python ../packaging/build_backend.py",
     "build": "vite build && electron-builder",
@@ -76,10 +76,13 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "latest",
+    "autoprefixer": "latest",
     "concurrently": "latest",
     "cross-env": "latest",
     "electron": "latest",
     "electron-builder": "latest",
+    "postcss": "latest",
+    "tailwindcss": "^3",
     "vite": "latest",
     "wait-on": "latest"
   }
