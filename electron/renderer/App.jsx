@@ -13,8 +13,9 @@ import DomainManager from './pages/DomainManager.jsx';
 import Deliverability from './pages/Deliverability.jsx';
 import Warmup from './pages/Warmup.jsx';
 import HealthMonitor from './pages/HealthMonitor.jsx';
+import ServerLogs from './pages/ServerLogs.jsx';
 
-const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains', 'Deliverability', 'Warmup', 'Health'];
+const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Backend Logs', 'Domains', 'Deliverability', 'Warmup', 'Health'];
 
 export default function App() {
   const [active, setActive] = useState('Dashboard');
@@ -46,6 +47,7 @@ export default function App() {
       case 'Analytics': return <Analytics />;
       case 'Settings': return <Settings />;
       case 'Logs': return <Logs />;
+      case 'Backend Logs': return <ServerLogs />;
       case 'Domains': return <DomainManager />;
       case 'Deliverability': return <Deliverability />;
       case 'Warmup': return <Warmup />;

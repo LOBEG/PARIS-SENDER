@@ -9,8 +9,8 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.models import HealthServer, Status, WarmupConfig
-from backend.repositories import DomainRepository, LedgerRepository, WarmupRepository
+from backend.models import HealthServer, LogComponent, LogSeverity, Status, WarmupConfig
+from backend.repositories import DomainRepository, LedgerRepository, LogRepository, WarmupRepository
 from backend.services import (
     DeliverabilityService,
     DeliveryProvider,
@@ -19,10 +19,13 @@ from backend.services import (
     DomainError,
     DomainService,
     HealthMonitorService,
+    LoggingService,
     OutboundMessage,
     WarmupService,
     start_health_monitor,
+    start_log_archiver,
     stop_health_monitor,
+    stop_log_archiver,
 )
 from backend.validators import AutograbService
 from backend.validators.compose import analyze_compose
@@ -132,29 +135,40 @@ def create_app(
     deliverability_service: DeliverabilityService | None = None,
     warmup_service: WarmupService | None = None,
     health_service: HealthMonitorService | None = None,
+    logging_service: LoggingService | None = None,
     health_servers: list[HealthServer | dict[str, Any]] | None = None,
     enforce_verified_domains: bool = True,
     min_deliverability_score: int = 70,
     enable_warmup_scheduler: bool = False,
     enable_health_monitor: bool = False,
+    enable_log_archiver: bool = False,
 ) -> FastAPI:
     """Create a FastAPI app with injectable ledger, delivery, domain, score, warmup, and health services."""
     app = FastAPI(title="Paris Sender Backend")
     repo_singleton = repository or (repository_factory() if repository_factory else LedgerRepository(":memory:"))
     provider_singleton = provider or (provider_factory() if provider_factory else ProviderNotConfigured())
     domain_service_singleton = domain_service or DomainService(domain_repository or DomainRepository(":memory:"))
+    logging_singleton = logging_service or LoggingService(LogRepository(":memory:"))
     deliverability_singleton = deliverability_service or DeliverabilityService(
-        repo_singleton, domain_service_singleton, threshold=min_deliverability_score
+        repo_singleton, domain_service_singleton, threshold=min_deliverability_score, logger=logging_singleton
     )
-    warmup_singleton = warmup_service or WarmupService(WarmupRepository(":memory:"))
+    if getattr(deliverability_singleton, "logger", None) is None:
+        deliverability_singleton.logger = logging_singleton
+    warmup_singleton = warmup_service or WarmupService(WarmupRepository(":memory:"), logger=logging_singleton)
+    if getattr(warmup_singleton, "logger", None) is None:
+        warmup_singleton.logger = logging_singleton
     health_singleton = health_service or HealthMonitorService(
         ledger=repo_singleton,
         domain_service=domain_service_singleton,
         warmup_service=warmup_singleton,
         servers=health_servers,
+        logger=logging_singleton,
     )
+    if getattr(health_singleton, "logger", None) is None:
+        health_singleton.logger = logging_singleton
     scheduler_task: asyncio.Task[Any] | None = None
     health_monitor_task: asyncio.Task[Any] | None = None
+    log_archiver_task: asyncio.Task[Any] | None = None
     autograb = AutograbService()
 
     def get_repository() -> LedgerRepository:
@@ -174,6 +188,9 @@ def create_app(
 
     def get_health_service() -> HealthMonitorService:
         return health_singleton
+
+    def get_logging_service() -> LoggingService:
+        return logging_singleton
 
     if enable_warmup_scheduler:
         @app.on_event("startup")
@@ -195,6 +212,16 @@ def create_app(
         @app.on_event("shutdown")
         async def _stop_health_monitor() -> None:
             await stop_health_monitor(health_monitor_task)
+
+    if enable_log_archiver:
+        @app.on_event("startup")
+        async def _start_log_archiver() -> None:
+            nonlocal log_archiver_task
+            log_archiver_task = start_log_archiver(logging_singleton)
+
+        @app.on_event("shutdown")
+        async def _stop_log_archiver() -> None:
+            await stop_log_archiver(log_archiver_task)
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -218,6 +245,24 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/logs")
+    def get_logs(
+        severity: str | None = None,
+        component: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 100,
+        logger: LoggingService = Depends(get_logging_service),
+    ) -> dict[str, Any]:
+        try:
+            return {"logs": logger.query(severity=severity, component=component, since=since, until=until, limit=limit)}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/logs/summary")
+    def get_log_summary(logger: LoggingService = Depends(get_logging_service)) -> dict[str, Any]:
+        return logger.summary()
+
     @app.post("/campaigns", status_code=201)
     def create_campaign(payload: CampaignCreate, repo: LedgerRepository = Depends(get_repository)) -> dict[str, Any]:
         campaign = repo.create_campaign(payload.name)
@@ -232,10 +277,20 @@ def create_app(
         domains: DomainService = Depends(get_domain_service),
         deliverability: DeliverabilityService = Depends(get_deliverability_service),
         warmup: WarmupService = Depends(get_warmup_service),
+        logger: LoggingService = Depends(get_logging_service),
     ) -> dict[str, Any]:
         campaign = repo.get_campaign(campaign_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="campaign not found")
+        logger.info(
+            LogComponent.CAMPAIGN,
+            "campaign send requested",
+            campaign_id=campaign_id,
+            recipients=len(payload.recipients),
+            sender=payload.sender,
+            html=payload.html,
+            non_smtp_delivery=payload.non_smtp_delivery,
+        )
         _enforce_domain(domains, payload.sender, enforce_verified_domains)
         score = deliverability.predict(
             _score_content(payload.subject, payload.content),
@@ -243,7 +298,23 @@ def create_app(
             sender=payload.sender,
             html=payload.html,
         )
+        logger.info(
+            LogComponent.CAMPAIGN,
+            "deliverability gate evaluated",
+            campaign_id=campaign_id,
+            score=score.score,
+            threshold=score.threshold,
+            passed=score.passed,
+        )
         if not score.passed:
+            logger.warning(
+                LogComponent.CAMPAIGN,
+                "campaign send blocked by deliverability gate",
+                campaign_id=campaign_id,
+                score=score.score,
+                threshold=score.threshold,
+                non_smtp_delivery=payload.non_smtp_delivery,
+            )
             raise HTTPException(
                 status_code=400,
                 detail=f"deliverability score {score.score} is below required threshold {score.threshold}",
@@ -251,14 +322,31 @@ def create_app(
         sender_domain = _sender_domain(payload.sender)
         if sender_domain and warmup.is_warmup(sender_domain):
             decision = warmup.check_send(sender_domain, len(payload.recipients))
+            logger.info(
+                LogComponent.CAMPAIGN,
+                "warmup gate evaluated",
+                campaign_id=campaign_id,
+                domain=sender_domain,
+                decision=decision.to_dict(),
+                non_smtp_delivery=payload.non_smtp_delivery,
+            )
             if decision.blocked:
+                logger.warning(
+                    LogComponent.CAMPAIGN,
+                    "campaign send blocked by warmup gate",
+                    campaign_id=campaign_id,
+                    domain=sender_domain,
+                    reason=decision.reason,
+                    allowed_count=decision.allowed_count,
+                    non_smtp_delivery=payload.non_smtp_delivery,
+                )
                 next_at = decision.next_batch_at.isoformat() if decision.next_batch_at else "unknown"
                 raise HTTPException(
                     status_code=400,
                     detail=f"warmup limit blocked send: {decision.reason}; allowed now {decision.allowed_count}; next batch at {next_at}",
                 )
             warmup.schedule(sender_domain, campaign_id, len(payload.recipients))
-        service = DeliveryService(repo, delivery_provider)
+        service = DeliveryService(repo, delivery_provider, logger=logger)
         receipts = service.send_campaign(
             campaign,
             payload.recipients,
@@ -269,10 +357,22 @@ def create_app(
         )
         if sender_domain and warmup.is_warmup(sender_domain):
             warmup.record_execution(sender_domain, campaign_id, len(receipts))
+        sent = sum(1 for receipt in receipts if receipt.result.success)
+        failed = sum(1 for receipt in receipts if not receipt.result.success)
+        logger.log(
+            LogComponent.CAMPAIGN,
+            LogSeverity.ERROR if failed else LogSeverity.INFO,
+            "campaign send completed",
+            campaign_id=campaign_id,
+            sent=sent,
+            failed=failed,
+            messages=[receipt.message.id for receipt in receipts],
+            non_smtp_delivery=payload.non_smtp_delivery,
+        )
         return {
             "campaign_id": campaign_id,
-            "sent": sum(1 for receipt in receipts if receipt.result.success),
-            "failed": sum(1 for receipt in receipts if not receipt.result.success),
+            "sent": sent,
+            "failed": failed,
             "messages": [receipt.message.id for receipt in receipts],
         }
 
@@ -321,9 +421,10 @@ def create_app(
 
     # ------------------------------------------------------------------ compose
     @app.post("/compose/preview")
-    def compose_preview(payload: PreviewRequest) -> dict[str, Any]:
+    def compose_preview(payload: PreviewRequest, logger: LoggingService = Depends(get_logging_service)) -> dict[str, Any]:
         rendered = autograb.render(payload.template, payload.email)
         context = autograb.context_from_email(payload.email)
+        logger.info(LogComponent.AUTOGRAB, "autograb preview rendered", email=payload.email, html=payload.html, fields=sorted(context.keys()))
         return {"rendered": rendered, "context": context, "html": payload.html}
 
     @app.post("/compose/analyze")

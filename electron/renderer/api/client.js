@@ -59,10 +59,21 @@ export const post = (path, body) => request('POST', path, body);
 export const patch = (path, body) => request('PATCH', path, body);
 export const del = (path) => request('DELETE', path);
 
+function queryString(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') search.set(key, value);
+  });
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
+
 export const getHealth = () => get('/health');
 export const getHealthStatus = () => get('/health/status');
 export const getDomainHealth = (domain) => get(`/health/domain/${encodeURIComponent(domain)}`);
 export const getServerHealth = (id) => get(`/health/server/${encodeURIComponent(id)}`);
+export const getLogs = (params = {}) => get(`/logs${queryString(params)}`);
+export const getLogSummary = () => get('/logs/summary');
 export const createCampaign = (name) => post('/campaigns', { name });
 export const getCampaign = (id) => get(`/campaigns/${encodeURIComponent(id)}`);
 export const getCampaignScore = (id) => get(`/campaigns/${encodeURIComponent(id)}/score`);

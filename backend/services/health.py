@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from backend.models import ComponentHealth, DomainHealthSummary, HealthServer, HealthStatus, QueueDepth, ServerHealth, Status
+from backend.models import ComponentHealth, DomainHealthSummary, HealthServer, HealthStatus, LogComponent, QueueDepth, ServerHealth, Status
 from backend.repositories import LedgerRepository
 from backend.services.domain import DomainService
 from backend.services.warmup import WarmupService
@@ -47,6 +47,7 @@ class HealthMonitorService:
         server_probe: ServerProbe | None = None,
         clock: Clock | None = None,
         throughput_window_seconds: int = 300,
+        logger: Any | None = None,
     ) -> None:
         self.ledger = ledger
         self.domain_service = domain_service
@@ -57,6 +58,7 @@ class HealthMonitorService:
         self.server_probe = server_probe or self._not_configured_probe
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self.throughput_window_seconds = max(1, int(throughput_window_seconds))
+        self.logger = logger
         self._latest_snapshot: dict[str, Any] | None = None
 
     @property
@@ -91,6 +93,14 @@ class HealthMonitorService:
             "servers": [server.to_dict() for server in servers],
         }
         self._latest_snapshot = snapshot
+        self._log(
+            "ERROR" if overall is HealthStatus.CRITICAL else "WARNING" if overall is HealthStatus.WARN else "INFO",
+            "health snapshot generated",
+            overall_status=overall.value,
+            components=len(components),
+            queue_depth=queue_depth.to_dict(),
+            domain_alerts=len(domain_alerts),
+        )
         return snapshot
 
     aggregate = snapshot
@@ -295,6 +305,10 @@ class HealthMonitorService:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    def _log(self, severity: str, message: str, **context: Any) -> None:
+        if self.logger is not None:
+            self.logger.log(LogComponent.HEALTH, severity, message, **context)
 
 
 class SmtplibProbe:

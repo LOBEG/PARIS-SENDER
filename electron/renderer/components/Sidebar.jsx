@@ -6,6 +6,7 @@ const icons = {
   Analytics: '▥',
   Settings: '⚙',
   Logs: '☰',
+  'Backend Logs': '▤',
   Domains: '◎',
   Deliverability: '◉',
   Warmup: '↗',

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import Any
 
-from backend.models import DeliverabilityScore, EventType, ScoreComponent, Status
+from backend.models import DeliverabilityScore, EventType, LogComponent, ScoreComponent, Status
 from backend.repositories import LedgerRepository
 from backend.services.domain import DomainService
 from backend.validators.compose import analyze_compose
@@ -46,10 +47,11 @@ class _ComponentResult:
 class DeliverabilityService:
     """Scores campaigns before delivery using domain, ledger, and compose signals."""
 
-    def __init__(self, ledger: LedgerRepository, domains: DomainService | None = None, threshold: int = 70) -> None:
+    def __init__(self, ledger: LedgerRepository, domains: DomainService | None = None, threshold: int = 70, logger: Any | None = None) -> None:
         self.ledger = ledger
         self.domains = domains
         self.threshold = _clamp(threshold)
+        self.logger = logger
 
     def score_campaign(
         self,
@@ -67,7 +69,7 @@ class DeliverabilityService:
         scored_content = content
         if scored_content is None and messages:
             scored_content = messages[-1].content
-        return self._build_score(
+        score = self._build_score(
             campaign_id=campaign_id,
             content=scored_content,
             html=html,
@@ -75,6 +77,8 @@ class DeliverabilityService:
             recipients=None,
             use_history=True,
         )
+        self._log_score(score, "campaign deliverability scored", campaign_id=campaign_id, sender=sender, html=html)
+        return score
 
     def predict(
         self,
@@ -85,14 +89,17 @@ class DeliverabilityService:
         html: bool = False,
     ) -> DeliverabilityScore:
         """Score prospective content and recipients without requiring persisted history."""
-        return self._build_score(
+        recipient_list = list(recipients)
+        score = self._build_score(
             campaign_id=None,
             content=content,
             html=html,
             sender=sender,
-            recipients=list(recipients),
+            recipients=recipient_list,
             use_history=False,
         )
+        self._log_score(score, "prospective deliverability scored", sender=sender, html=html, recipients=len(recipient_list))
+        return score
 
     def domain_reputation(self, sender: str | None) -> _ComponentResult:
         """Score sender-domain authentication health from the domain service."""
@@ -271,6 +278,20 @@ class DeliverabilityService:
             threshold=self.threshold,
             passed=passed,
         )
+
+    def _log_score(self, score: DeliverabilityScore, message: str, **context: Any) -> None:
+        if self.logger is not None:
+            self.logger.log(
+                LogComponent.DELIVERABILITY,
+                "INFO" if score.passed else "WARNING",
+                message,
+                score=score.score,
+                threshold=score.threshold,
+                passed=score.passed,
+                warnings=score.warnings,
+                suggestions=score.suggestions,
+                **context,
+            )
 
     def _recipient_signals(self, recipients: list[str] | None) -> tuple[list[str], list[str]]:
         if recipients is None:

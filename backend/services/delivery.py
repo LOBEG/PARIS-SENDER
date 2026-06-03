@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from backend.models import Campaign, Event, Message, Recipient, Status
+from backend.models import Campaign, Event, LogComponent, Message, Recipient, Status
 from backend.repositories import LedgerRepository
 from backend.services.mime import build_mime_message
 
@@ -126,9 +126,10 @@ class SMTPDeliveryProvider(DeliveryProvider):
 class DeliveryService:
     """Orchestrates ledger writes and delegates network delivery to providers."""
 
-    def __init__(self, ledger: LedgerRepository, provider: DeliveryProvider) -> None:
+    def __init__(self, ledger: LedgerRepository, provider: DeliveryProvider, logger: Any | None = None) -> None:
         self.ledger = ledger
         self.provider = provider
+        self.logger = logger
 
     def send_campaign(
         self,
@@ -146,7 +147,8 @@ class DeliveryService:
             raise ValueError("campaign must have an id after persistence")
 
         receipts: list[SendReceipt] = []
-        for email in recipients:
+        recipient_list = list(recipients)
+        for email in recipient_list:
             recipient = self.ledger.add_recipient(persisted_campaign.id, email)
             if recipient.id is None:
                 raise ValueError("recipient must have an id after persistence")
@@ -174,6 +176,21 @@ class DeliveryService:
                 self._record(message, Status.FAILED, error=str(exc))
             updated_message = self.ledger.get_message(message.id or 0) or message
             receipts.append(SendReceipt(recipient=recipient, message=updated_message, result=result))
+        if self.logger is not None:
+            sent = sum(1 for receipt in receipts if receipt.result.success)
+            failed = len(receipts) - sent
+            severity = "ERROR" if failed else "INFO"
+            self.logger.log(
+                LogComponent.DELIVERY,
+                severity,
+                "campaign delivery completed",
+                campaign_id=persisted_campaign.id,
+                requested=len(recipient_list),
+                sent=sent,
+                failed=failed,
+                sender=sender,
+                html=html,
+            )
         return receipts
 
     def _record(

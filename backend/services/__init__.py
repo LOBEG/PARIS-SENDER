@@ -12,6 +12,7 @@ from .domain import (
     is_valid_domain,
 )
 from .health import HealthMonitorService, ServerProbe, SmtplibProbe, start_health_monitor, stop_health_monitor
+from .logging_service import LoggingService, start_log_archiver, stop_log_archiver
 from .mime import build_mime_message
 from .warmup import WarmupDecision, WarmupService, start_warmup_scheduler, stop_warmup_scheduler
 
@@ -23,6 +24,7 @@ __all__ = [
     "DomainError",
     "DomainService",
     "HealthMonitorService",
+    "LoggingService",
     "OutboundMessage",
     "SMTPConfig",
     "SMTPDeliveryProvider",
@@ -37,7 +39,9 @@ __all__ = [
     "generate_dkim_keypair",
     "is_valid_domain",
     "start_health_monitor",
+    "start_log_archiver",
     "start_warmup_scheduler",
     "stop_health_monitor",
+    "stop_log_archiver",
     "stop_warmup_scheduler",
 ]

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from backend.models import WarmupConfig, WarmupEventType, WarmupStatus
+from backend.models import LogComponent, WarmupConfig, WarmupEventType, WarmupStatus
 from backend.repositories import WarmupRepository
 
 Clock = Callable[[], datetime]
@@ -40,13 +40,16 @@ class WarmupDecision:
 class WarmupService:
     """Coordinates warmup configuration, ramp calculations, and send gates."""
 
-    def __init__(self, repository: WarmupRepository, clock: Clock | None = None) -> None:
+    def __init__(self, repository: WarmupRepository, clock: Clock | None = None, logger: Any | None = None) -> None:
         self.repository = repository
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self.logger = logger
 
     def enable_domain(self, domain: str, config: WarmupConfig | None = None) -> WarmupConfig:
         """Enable warmup for a domain with the supplied or default config."""
-        return self.repository.upsert_config(domain, config or WarmupConfig(), now=self._now())
+        stored = self.repository.upsert_config(domain, config or WarmupConfig(), now=self._now())
+        self._log("INFO", "warmup domain configured", domain=domain.strip().lower(), config=stored.to_dict())
+        return stored
 
     def is_warmup(self, domain: str | None) -> bool:
         """Return whether a domain is currently warmup-enabled."""
@@ -91,11 +94,18 @@ class WarmupService:
             metadata=decision.to_dict(),
             created_at=self._now(),
         )
+        self._log(
+            "WARNING" if decision.blocked else "INFO",
+            "warmup send scheduled",
+            domain=domain.strip().lower(),
+            campaign_id=campaign_id,
+            decision=decision.to_dict(),
+        )
         return {"decision": decision.to_dict(), "event": event}
 
     def record_execution(self, domain: str, campaign_id: int | None, batch_size: int) -> dict[str, Any]:
         """Record an executed warmup batch so rolling windows advance."""
-        return self.repository.append_event(
+        event = self.repository.append_event(
             domain,
             WarmupEventType.EXECUTED,
             campaign_id=campaign_id,
@@ -103,6 +113,8 @@ class WarmupService:
             detail="batch executed",
             created_at=self._now(),
         )
+        self._log("INFO", "warmup batch executed", domain=domain.strip().lower(), campaign_id=campaign_id, batch_size=max(0, int(batch_size)))
+        return event
 
     def progress(self, domain: str) -> WarmupStatus:
         """Return current warmup progress for the UI."""
@@ -168,6 +180,7 @@ class WarmupService:
             metadata=stored.to_dict(),
             created_at=self._now(),
         )
+        self._log("WARNING", "warmup override applied", domain=domain.strip().lower(), config=stored.to_dict(), detail=detail)
         return stored
 
     def events(self, domain: str, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -242,6 +255,10 @@ class WarmupService:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    def _log(self, severity: str, message: str, **context: Any) -> None:
+        if self.logger is not None:
+            self.logger.log(LogComponent.WARMUP, severity, message, **context)
 
 
 def max_per_batch_or_default(value: int | None, config: WarmupConfig) -> int:
