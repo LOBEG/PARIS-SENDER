@@ -1,8 +1,8 @@
 """Compose-time content analysis: placeholder/Jinja validation, spam & HTML ratio.
 
 These helpers power the Electron Compose editor (Phase 2). They surface
-warnings rather than block sending, mirroring the legacy Tkinter compose
-checks but in a UI-agnostic, testable form.
+warnings rather than block sending, preserving the retired desktop compose
+checks in a UI-agnostic, testable form.
 """
 
 from __future__ import annotations

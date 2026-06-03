@@ -1,7 +1,7 @@
 # Paris Sender V10 — Migration Plan
 
-**Status:** Phase 1 deliverable. Companion to `audit_report.md`.
-**Goal:** Transform Paris Sender from a 12k-line Tkinter monolith into a modular, service-oriented desktop app: **Electron frontend → FastAPI → service layer → providers**, Python backend preserved, SQLite now / PostgreSQL-ready.
+**Status:** Phase 12 complete. Companion to `audit_report.md`, `PHASE12_AUDIT_REPORT.md`, and `FINAL_SYSTEM_REPORT.md`.
+**Goal:** Transform Paris Sender from the retired desktop monolith into a modular, service-oriented desktop app: **Electron frontend → FastAPI → service layer → providers**, Python backend preserved, SQLite now / PostgreSQL-ready.
 
 This plan describes *what* each phase does and its exit gate. It does not prescribe implementation code. **No phase may be skipped, and no phase starts until the previous phase passes its quality gate.**
 
@@ -10,8 +10,8 @@ This plan describes *what* each phase does and its exit gate. It does not prescr
 ## Guiding Constraints
 
 - **Preserve autograb** (`[firstname]`/`[greetings]`/`[company]`, Jinja2 context, ISP fallbacks). Do not rewrite its logic unless a bug is found; only adapt its interface.
-- **Preserve validated behaviors** in `test_fixes.py` (template/Jinja validation, DNS classification, sent-log behavior, URL-hostname sanitization, host-key policy).
-- **Smallest correct change per step.** Strangler-fig approach: stand up the new architecture alongside the monolith and migrate capability-by-capability rather than a big-bang rewrite.
+- **Preserve validated behaviors** in the pytest suite (template/Jinja validation, DNS classification, sent-log behavior, URL-hostname sanitization, host-key policy).
+- **Smallest correct change per step.** The strangler-fig migration is complete: the new architecture is active and the legacy desktop fallback has been removed.
 
 ---
 
@@ -47,12 +47,12 @@ docs/                   # architecture, manuals, reports
 - Deliverables: `audit_report.md`, `migration_plan.md`.
 - Gate: documents reviewed/approved before Phase 2.
 
-### Phase 2 — UI Migration (Tkinter → Electron)
+### Phase 2 — UI Migration (desktop UI → Electron) ✅
 - Scaffold `frontend/electron/` (use an official scaffolding tool, not hand-rolled).
 - Build the 12 required screens against the FastAPI surface; **Compose** must support HTML + plain text, auto HTML/plain previews, template/placeholder/Jinja validation, character count, and spam-warning indicators.
 - Remove obsolete/dead/duplicate compose controls and legacy sender options.
-- Keep the Tkinter app runnable until parity is verified (strangler approach), then retire it in Phase 12.
-- Gate: screens render against API; compose previews + validation work; existing validation tests still pass.
+- Retired the desktop fallback in Phase 12 after parity was verified.
+- Gate: screens render against API; compose previews + validation work; validation tests pass.
 
 ### Phase 3 — Delivery Architecture Refactor
 - Introduce `DeliveryService` abstraction + `Provider` interface; implement `SMTPDeliveryProvider` first.
@@ -95,15 +95,15 @@ docs/                   # architecture, manuals, reports
 - Add secret scanning, configuration validation, and startup security checks. Harden TLS (remove insecure-SSL downgrade) and SSH host-key policy.
 - Gate: secret scan clean; no secrets in tree; startup checks enforce safe config.
 
-### Phase 11 — Testing
-- Build unit / integration / deliverability / service / API / UI test suites; keep `test_fixes.py` behaviors compatible (port Tkinter-specific tests to UI tests).
+### Phase 11 — Testing ✅
+- Build unit / integration / deliverability / service / API / UI test suites; preserve migrated behavior in pytest.
 - Add lint (ruff/flake8), type-check (mypy), dependency audit (pip-audit), dead-code scan (vulture) to CI.
 - Gate: full suite + static gates green.
 
-### Phase 12 — Cleanup
-- Remove obsolete Tkinter code, unused SMTP/DNS/MIME/validation duplicates, legacy widgets, unused imports/deps/files/classes/methods/config fields.
-- Pin and split dependencies; consolidate on FastAPI (drop Flask/waitress if tracking moves to FastAPI).
-- Gate: dead-code scan clean; app builds and runs end-to-end.
+### Phase 12 — Cleanup ✅
+- Removed obsolete desktop monolith files and the retired source-inspection unittest suite.
+- Added non-SMTP provider selection through the same DeliveryService/ledger/logging flow as SMTP.
+- Gate: backend pytest suite green; no active Python code imports desktop UI modules.
 
 ---
 

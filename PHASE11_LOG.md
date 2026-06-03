@@ -73,9 +73,6 @@ python -m pip install -r requirements-dev.txt --quiet
 # Full pytest suite, including fast e2e/performance checks
 python -m pytest tests/ -q
 
-# Legacy monolith suite (unchanged, still at repo root)
-python -m unittest test_fixes.py
-
 # By pyramid layer
 python -m pytest tests/unit/ -q
 python -m pytest tests/integration/ -q
@@ -100,7 +97,7 @@ python -m pytest tests/ -n auto -q
 ## Validation results
 
 - `python -m pytest tests/ -q` → `101 passed, 1 skipped`.
-- `python -m unittest test_fixes.py` → `Ran 216 tests`, `OK`.
+- Legacy monolith validation was retired in Phase 12 with `test_fixes.py`.
 - `python -m pytest tests/ --cov=backend --cov-report=term-missing -q` → `101 passed, 1 skipped`, real total coverage `86%`.
 - `python -m pytest tests/ --cov=backend --cov-report=term-missing --cov-report=html -q` → passed and wrote HTML coverage during validation.
 - `python -m pytest tests/e2e/ -q` → `2 passed, 1 skipped`; skipped test is the optional Playwright smoke because Playwright is not installed.

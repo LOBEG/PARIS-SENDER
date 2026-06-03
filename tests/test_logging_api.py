@@ -24,6 +24,7 @@ def _client() -> tuple[TestClient, LoggingService]:
     app = create_app(
         repository=LedgerRepository(":memory:"),
         provider=FakeProvider(),
+        non_smtp_provider=FakeProvider(),
         warmup_service=warmup,
         logging_service=logger,
         enforce_verified_domains=False,

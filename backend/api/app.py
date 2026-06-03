@@ -116,8 +116,11 @@ class AnalyzeRequest(BaseModel):
 class ProviderNotConfigured(DeliveryProvider):
     """Default provider that makes missing dependency wiring explicit."""
 
+    def __init__(self, message: str = "delivery provider is not configured") -> None:
+        self.message = message
+
     def send(self, message: OutboundMessage) -> DeliveryResult:
-        raise RuntimeError("delivery provider is not configured")
+        raise RuntimeError(self.message)
 
 
 def _sender_domain(sender: str) -> str | None:
@@ -130,10 +133,12 @@ def create_app(
     *,
     repository: LedgerRepository | None = None,
     provider: DeliveryProvider | None = None,
+    non_smtp_provider: DeliveryProvider | None = None,
     domain_repository: DomainRepository | None = None,
     domain_service: DomainService | None = None,
     repository_factory: Callable[[], LedgerRepository] | None = None,
     provider_factory: Callable[[], DeliveryProvider] | None = None,
+    non_smtp_provider_factory: Callable[[], DeliveryProvider] | None = None,
     deliverability_service: DeliverabilityService | None = None,
     warmup_service: WarmupService | None = None,
     health_service: HealthMonitorService | None = None,
@@ -162,6 +167,11 @@ def create_app(
         app.add_middleware(AuthMiddleware, secret=jwt_secret)
     repo_singleton = repository or (repository_factory() if repository_factory else LedgerRepository(":memory:"))
     provider_singleton = provider or (provider_factory() if provider_factory else ProviderNotConfigured())
+    non_smtp_provider_singleton = non_smtp_provider or (
+        non_smtp_provider_factory()
+        if non_smtp_provider_factory
+        else ProviderNotConfigured("non-SMTP delivery provider is not configured")
+    )
     domain_service_singleton = domain_service or DomainService(domain_repository or DomainRepository(":memory:"))
     logging_singleton = logging_service or LoggingService(LogRepository(":memory:"))
     deliverability_singleton = deliverability_service or DeliverabilityService(
@@ -191,6 +201,9 @@ def create_app(
 
     def get_provider() -> DeliveryProvider:
         return provider_singleton
+
+    def get_non_smtp_provider() -> DeliveryProvider:
+        return non_smtp_provider_singleton
 
     def get_domain_service() -> DomainService:
         return domain_service_singleton
@@ -289,6 +302,7 @@ def create_app(
         payload: SendRequest,
         repo: LedgerRepository = Depends(get_repository),
         delivery_provider: DeliveryProvider = Depends(get_provider),
+        non_smtp_delivery_provider: DeliveryProvider = Depends(get_non_smtp_provider),
         domains: DomainService = Depends(get_domain_service),
         deliverability: DeliverabilityService = Depends(get_deliverability_service),
         warmup: WarmupService = Depends(get_warmup_service),
@@ -297,6 +311,7 @@ def create_app(
         campaign = repo.get_campaign(campaign_id)
         if campaign is None:
             raise HTTPException(status_code=404, detail="campaign not found")
+        delivery_channel = "non_smtp" if payload.non_smtp_delivery else "smtp"
         logger.info(
             LogComponent.CAMPAIGN,
             "campaign send requested",
@@ -305,6 +320,7 @@ def create_app(
             sender=payload.sender,
             html=payload.html,
             non_smtp_delivery=payload.non_smtp_delivery,
+            delivery_channel=delivery_channel,
         )
         _enforce_domain(domains, payload.sender, enforce_verified_domains)
         score = deliverability.predict(
@@ -320,6 +336,7 @@ def create_app(
             score=score.score,
             threshold=score.threshold,
             passed=score.passed,
+            delivery_channel=delivery_channel,
         )
         if not score.passed:
             logger.warning(
@@ -329,6 +346,7 @@ def create_app(
                 score=score.score,
                 threshold=score.threshold,
                 non_smtp_delivery=payload.non_smtp_delivery,
+                delivery_channel=delivery_channel,
             )
             raise HTTPException(
                 status_code=400,
@@ -344,6 +362,7 @@ def create_app(
                 domain=sender_domain,
                 decision=decision.to_dict(),
                 non_smtp_delivery=payload.non_smtp_delivery,
+                delivery_channel=delivery_channel,
             )
             if decision.blocked:
                 logger.warning(
@@ -354,6 +373,7 @@ def create_app(
                     reason=decision.reason,
                     allowed_count=decision.allowed_count,
                     non_smtp_delivery=payload.non_smtp_delivery,
+                    delivery_channel=delivery_channel,
                 )
                 next_at = decision.next_batch_at.isoformat() if decision.next_batch_at else "unknown"
                 raise HTTPException(
@@ -361,7 +381,8 @@ def create_app(
                     detail=f"warmup limit blocked send: {decision.reason}; allowed now {decision.allowed_count}; next batch at {next_at}",
                 )
             warmup.schedule(sender_domain, campaign_id, len(payload.recipients))
-        service = DeliveryService(repo, delivery_provider, logger=logger)
+        selected_provider = non_smtp_delivery_provider if payload.non_smtp_delivery else delivery_provider
+        service = DeliveryService(repo, selected_provider, logger=logger)
         receipts = service.send_campaign(
             campaign,
             payload.recipients,
@@ -369,6 +390,7 @@ def create_app(
             payload.content,
             sender=payload.sender,
             html=payload.html,
+            delivery_channel=delivery_channel,
         )
         if sender_domain and warmup.is_warmup(sender_domain):
             warmup.record_execution(sender_domain, campaign_id, len(receipts))
@@ -383,12 +405,14 @@ def create_app(
             failed=failed,
             messages=[receipt.message.id for receipt in receipts],
             non_smtp_delivery=payload.non_smtp_delivery,
+            delivery_channel=delivery_channel,
         )
         return {
             "campaign_id": campaign_id,
             "sent": sent,
             "failed": failed,
             "messages": [receipt.message.id for receipt in receipts],
+            "delivery_channel": delivery_channel,
         }
 
     @app.get("/campaigns/{campaign_id}/score")

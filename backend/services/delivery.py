@@ -76,6 +76,33 @@ class SMTPConfig:
 SMTPFactory = Callable[[SMTPConfig, ssl.SSLContext], SMTPClient]
 
 
+class NonSmtpDeliveryProvider(DeliveryProvider):
+    """Non-SMTP provider seam using the shared MIME builder and injectable transport."""
+
+    def __init__(self, sender: Callable[[OutboundMessage], DeliveryResult] | None = None) -> None:
+        self.sender = sender or self._default_sender
+
+    def send(self, message: OutboundMessage) -> DeliveryResult:
+        """Build a MIME message and hand the enriched outbound message to the transport."""
+        mime_message = build_mime_message(
+            message.sender, message.recipient, message.subject, message.content, html=message.html
+        )
+        metadata = dict(message.metadata or {})
+        metadata["mime_message"] = mime_message
+        outbound = OutboundMessage(
+            sender=message.sender,
+            recipient=message.recipient,
+            subject=message.subject,
+            content=message.content,
+            html=message.html,
+            metadata=metadata,
+        )
+        return self.sender(outbound)
+
+    def _default_sender(self, message: OutboundMessage) -> DeliveryResult:
+        raise RuntimeError("non-SMTP transport is not configured")
+
+
 class SMTPDeliveryProvider(DeliveryProvider):
     """SMTP provider using stdlib smtplib with injectable transport."""
 
@@ -140,6 +167,7 @@ class DeliveryService:
         *,
         sender: str,
         html: bool = False,
+        delivery_channel: str | None = None,
     ) -> list[SendReceipt]:
         """Send a campaign to recipients while persisting every status event."""
         persisted_campaign = campaign if campaign.id is not None else self.ledger.create_campaign(campaign)
@@ -180,16 +208,21 @@ class DeliveryService:
             sent = sum(1 for receipt in receipts if receipt.result.success)
             failed = len(receipts) - sent
             severity = "ERROR" if failed else "INFO"
+            context = {
+                "campaign_id": persisted_campaign.id,
+                "requested": len(recipient_list),
+                "sent": sent,
+                "failed": failed,
+                "sender": sender,
+                "html": html,
+            }
+            if delivery_channel is not None:
+                context["delivery_channel"] = delivery_channel
             self.logger.log(
                 LogComponent.DELIVERY,
                 severity,
                 "campaign delivery completed",
-                campaign_id=persisted_campaign.id,
-                requested=len(recipient_list),
-                sent=sent,
-                failed=failed,
-                sender=sender,
-                html=html,
+                **context,
             )
         return receipts
 

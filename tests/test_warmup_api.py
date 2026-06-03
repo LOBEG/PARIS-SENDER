@@ -34,6 +34,7 @@ def _client():
     app = create_app(
         repository=LedgerRepository(":memory:"),
         provider=FakeProvider(),
+        non_smtp_provider=FakeProvider(),
         domain_service=domain_service,
         warmup_service=warmup_service,
     )

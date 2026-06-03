@@ -72,16 +72,11 @@ critical security issues.
 
 ## Remaining work (subsequent phases, async)
 
-Phase 2 Electron frontend (12 screens), Phase 4 Domain Manager (DKIM/SPF/DMARC),
-Phase 6 deliverability score engine, Phase 7 WarmupService, Phase 8 Health Monitor,
-Phase 9 LoggingService, Phase 10 remaining hardening (secret scanning, startup
-checks), Phase 11 full test pyramid, Phase 12 monolith retirement + dep cleanup,
-and the final deliverable docs. The monolith remains the live app until each
-capability reaches parity behind the new architecture.
+Phase 12 completed the strangler-fig migration: the Electron/FastAPI/service
+architecture is active, non-SMTP selection routes through `DeliveryService`, and
+the retired desktop monolith/source-inspection suite were removed from the tree.
 
 ## Notes
 
-- The monolith (`paris_sender_complete1.py`) and its tests remain intact during
-  the strangler-fig migration; new architecture is built alongside it under
-  `backend/` and `frontend/` and adopted capability-by-capability.
-- Autograb logic and all `test_fixes.py` validated behaviors are preserved.
+- Phase 12 retired the desktop monolith and the legacy source-inspection unittest suite.
+- Autograb and migrated validation/delivery behaviors are preserved in `tests/`.

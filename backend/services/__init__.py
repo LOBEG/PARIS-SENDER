@@ -1,7 +1,7 @@
 """Service exports."""
 
 from .deliverability import DeliverabilityService
-from .delivery import DeliveryProvider, DeliveryResult, DeliveryService, OutboundMessage, SMTPConfig, SMTPDeliveryProvider
+from .delivery import DeliveryProvider, DeliveryResult, DeliveryService, NonSmtpDeliveryProvider, OutboundMessage, SMTPConfig, SMTPDeliveryProvider
 from .domain import (
     DomainError,
     DomainService,
@@ -26,6 +26,7 @@ __all__ = [
     "DomainService",
     "HealthMonitorService",
     "LoggingService",
+    "NonSmtpDeliveryProvider",
     "OutboundMessage",
     "SMTPConfig",
     "SMTPDeliveryProvider",

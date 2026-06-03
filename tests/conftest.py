@@ -131,6 +131,7 @@ def app_bundle(
     app = create_app(
         repository=ledger_repo,
         provider=fake_provider,
+        non_smtp_provider=fake_provider,
         domain_service=domain_service,
         warmup_service=warmup_service,
         logging_service=log_service,
