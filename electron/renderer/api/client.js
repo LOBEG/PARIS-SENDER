@@ -75,3 +75,7 @@ export const updateDmarcPolicy = (id, policy) => patch(`/domains/${encodeURIComp
 export const rotateDkim = (id) => post(`/domains/${encodeURIComponent(id)}/dkim/rotate`, {});
 export const deleteDomain = (id) => del(`/domains/${encodeURIComponent(id)}`);
 export const getDomainHistory = (id) => get(`/domains/${encodeURIComponent(id)}/history`);
+export const getWarmupDomains = () => get('/warmup/domains');
+export const configureWarmup = (payload) => post('/warmup/domains', payload);
+export const getWarmupStatus = (domain) => get(`/warmup/domains/${encodeURIComponent(domain)}/status`);
+export const overrideWarmup = (domain, payload) => post(`/warmup/domains/${encodeURIComponent(domain)}/override`, payload);

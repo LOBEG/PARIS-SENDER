@@ -12,6 +12,7 @@ from .domain import (
     is_valid_domain,
 )
 from .mime import build_mime_message
+from .warmup import WarmupDecision, WarmupService, start_warmup_scheduler, stop_warmup_scheduler
 
 __all__ = [
     "DeliverabilityService",
@@ -23,10 +24,14 @@ __all__ = [
     "OutboundMessage",
     "SMTPConfig",
     "SMTPDeliveryProvider",
+    "WarmupDecision",
+    "WarmupService",
     "build_dkim_record",
     "build_dmarc_record",
     "build_mime_message",
     "build_spf_record",
     "generate_dkim_keypair",
     "is_valid_domain",
+    "start_warmup_scheduler",
+    "stop_warmup_scheduler",
 ]

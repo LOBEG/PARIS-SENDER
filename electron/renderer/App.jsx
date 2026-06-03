@@ -11,8 +11,9 @@ import Settings from './pages/Settings.jsx';
 import Logs from './pages/Logs.jsx';
 import DomainManager from './pages/DomainManager.jsx';
 import Deliverability from './pages/Deliverability.jsx';
+import Warmup from './pages/Warmup.jsx';
 
-const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains', 'Deliverability'];
+const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains', 'Deliverability', 'Warmup'];
 
 export default function App() {
   const [active, setActive] = useState('Dashboard');
@@ -46,6 +47,7 @@ export default function App() {
       case 'Logs': return <Logs />;
       case 'Domains': return <DomainManager />;
       case 'Deliverability': return <Deliverability />;
+      case 'Warmup': return <Warmup />;
       default: return <Dashboard onNavigate={setActive} />;
     }
   }, [active]);

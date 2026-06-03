@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.models import Status
-from backend.repositories import DomainRepository, LedgerRepository
+from backend.models import Status, WarmupConfig
+from backend.repositories import DomainRepository, LedgerRepository, WarmupRepository
 from backend.services import (
     DeliverabilityService,
     DeliveryProvider,
@@ -18,6 +19,7 @@ from backend.services import (
     DomainError,
     DomainService,
     OutboundMessage,
+    WarmupService,
 )
 from backend.validators import AutograbService
 from backend.validators.compose import analyze_compose
@@ -48,6 +50,29 @@ class PredictRequest(BaseModel):
     content: str = Field(..., min_length=1)
     sender: str = Field("sender@example.com", min_length=1)
     html: bool = False
+
+
+class WarmupDomainRequest(BaseModel):
+    """Request to enable or update warmup for a domain."""
+
+    domain: str = Field(..., min_length=1)
+    daily_limit: int = Field(100, ge=1)
+    max_per_batch: int = Field(25, ge=1)
+    max_per_hour: int = Field(20, ge=1)
+    ramp_start_limit: int = Field(10, ge=1)
+    ramp_days: int = Field(7, ge=1)
+    enabled: bool = True
+
+
+class WarmupOverrideRequest(BaseModel):
+    """Local admin override request; authorized must be true to apply changes."""
+
+    authorized: bool = False
+    daily_limit: int | None = Field(None, ge=1)
+    max_per_batch: int | None = Field(None, ge=1)
+    max_per_hour: int | None = Field(None, ge=1)
+    bypass_remaining: bool = False
+    detail: str | None = None
 
 
 class DomainCreate(BaseModel):
@@ -102,10 +127,12 @@ def create_app(
     repository_factory: Callable[[], LedgerRepository] | None = None,
     provider_factory: Callable[[], DeliveryProvider] | None = None,
     deliverability_service: DeliverabilityService | None = None,
+    warmup_service: WarmupService | None = None,
     enforce_verified_domains: bool = True,
     min_deliverability_score: int = 70,
+    enable_warmup_scheduler: bool = False,
 ) -> FastAPI:
-    """Create a FastAPI app with injectable ledger, delivery, domain, and score services."""
+    """Create a FastAPI app with injectable ledger, delivery, domain, score, and warmup services."""
     app = FastAPI(title="Paris Sender Backend")
     repo_singleton = repository or (repository_factory() if repository_factory else LedgerRepository(":memory:"))
     provider_singleton = provider or (provider_factory() if provider_factory else ProviderNotConfigured())
@@ -113,6 +140,8 @@ def create_app(
     deliverability_singleton = deliverability_service or DeliverabilityService(
         repo_singleton, domain_service_singleton, threshold=min_deliverability_score
     )
+    warmup_singleton = warmup_service or WarmupService(WarmupRepository(":memory:"))
+    scheduler_task: asyncio.Task[Any] | None = None
     autograb = AutograbService()
 
     def get_repository() -> LedgerRepository:
@@ -126,6 +155,20 @@ def create_app(
 
     def get_deliverability_service() -> DeliverabilityService:
         return deliverability_singleton
+
+    def get_warmup_service() -> WarmupService:
+        return warmup_singleton
+
+    if enable_warmup_scheduler:
+        @app.on_event("startup")
+        async def _start_warmup_scheduler() -> None:
+            nonlocal scheduler_task
+            scheduler_task = asyncio.create_task(warmup_singleton.run_ramp_scheduler())
+
+        @app.on_event("shutdown")
+        async def _stop_warmup_scheduler() -> None:
+            if scheduler_task is not None:
+                scheduler_task.cancel()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -144,6 +187,7 @@ def create_app(
         delivery_provider: DeliveryProvider = Depends(get_provider),
         domains: DomainService = Depends(get_domain_service),
         deliverability: DeliverabilityService = Depends(get_deliverability_service),
+        warmup: WarmupService = Depends(get_warmup_service),
     ) -> dict[str, Any]:
         campaign = repo.get_campaign(campaign_id)
         if campaign is None:
@@ -160,6 +204,16 @@ def create_app(
                 status_code=400,
                 detail=f"deliverability score {score.score} is below required threshold {score.threshold}",
             )
+        sender_domain = _sender_domain(payload.sender)
+        if sender_domain and warmup.is_warmup(sender_domain):
+            decision = warmup.check_send(sender_domain, len(payload.recipients))
+            if decision.blocked:
+                next_at = decision.next_batch_at.isoformat() if decision.next_batch_at else "unknown"
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"warmup limit blocked send: {decision.reason}; allowed now {decision.allowed_count}; next batch at {next_at}",
+                )
+            warmup.schedule(sender_domain, campaign_id, len(payload.recipients))
         service = DeliveryService(repo, delivery_provider)
         receipts = service.send_campaign(
             campaign,
@@ -169,6 +223,8 @@ def create_app(
             sender=payload.sender,
             html=payload.html,
         )
+        if sender_domain and warmup.is_warmup(sender_domain):
+            warmup.record_execution(sender_domain, campaign_id, len(receipts))
         return {
             "campaign_id": campaign_id,
             "sent": sum(1 for receipt in receipts if receipt.result.success),
@@ -229,6 +285,62 @@ def create_app(
     @app.post("/compose/analyze")
     def compose_analyze(payload: AnalyzeRequest) -> dict[str, Any]:
         return analyze_compose(payload.content, html=payload.html)
+
+    # ------------------------------------------------------------------ warmup
+    @app.post("/warmup/domains", status_code=201)
+    def configure_warmup_domain(
+        payload: WarmupDomainRequest,
+        warmup: WarmupService = Depends(get_warmup_service),
+    ) -> dict[str, Any]:
+        config = warmup.enable_domain(
+            payload.domain,
+            WarmupConfig(
+                daily_limit=payload.daily_limit,
+                max_per_batch=payload.max_per_batch,
+                max_per_hour=payload.max_per_hour,
+                ramp_start_limit=payload.ramp_start_limit,
+                ramp_days=payload.ramp_days,
+                enabled=payload.enabled,
+            ),
+        )
+        return {"domain": payload.domain.strip().lower(), "config": config.to_dict()}
+
+    @app.get("/warmup/domains")
+    def list_warmup_domains(warmup: WarmupService = Depends(get_warmup_service)) -> dict[str, Any]:
+        return {"domains": warmup.list_domains()}
+
+    @app.get("/warmup/domains/{domain}/status")
+    def get_warmup_status(domain: str, warmup: WarmupService = Depends(get_warmup_service)) -> dict[str, Any]:
+        try:
+            return warmup.progress(domain).to_dict()
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/warmup/domains/{domain}/override")
+    def override_warmup_domain(
+        domain: str,
+        payload: WarmupOverrideRequest,
+        warmup: WarmupService = Depends(get_warmup_service),
+    ) -> dict[str, Any]:
+        try:
+            config = warmup.admin_override(
+                domain,
+                authorized=payload.authorized,
+                daily_limit=payload.daily_limit,
+                max_per_hour=payload.max_per_hour,
+                max_per_batch=payload.max_per_batch,
+                bypass_remaining=payload.bypass_remaining,
+                detail=payload.detail,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"domain": domain.strip().lower(), "config": config.to_dict()}
+
+    @app.get("/warmup/domains/{domain}/events")
+    def get_warmup_events(domain: str, warmup: WarmupService = Depends(get_warmup_service)) -> dict[str, Any]:
+        return {"domain": domain.strip().lower(), "events": warmup.events(domain)}
 
     # ------------------------------------------------------------------ domains
     @app.get("/domains")
