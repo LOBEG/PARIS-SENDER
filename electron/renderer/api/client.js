@@ -1,0 +1,75 @@
+export const BASE_URL = window.parisAPI?.backendUrl || 'http://127.0.0.1:8000';
+
+const listeners = new Set();
+
+export function subscribeApiLogs(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function emitApiLog(entry) {
+  const normalized = {
+    id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+    timestamp: new Date().toISOString(),
+    ...entry
+  };
+  listeners.forEach((listener) => listener(normalized));
+}
+
+function emit(level, action, details) {
+  emitApiLog({ level, action, details });
+}
+
+async function request(method, path, body) {
+  const url = `${BASE_URL}${path}`;
+  const options = {
+    method,
+    headers: {
+      Accept: 'application/json'
+    }
+  };
+
+  if (body !== undefined) {
+    options.headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(body);
+  }
+
+  const startedAt = performance.now();
+  try {
+    emit('info', `${method} ${path}`, body ? 'request sent' : 'request sent without body');
+    const response = await fetch(url, options);
+    const contentType = response.headers.get('content-type') || '';
+    const payload = contentType.includes('application/json') ? await response.json() : await response.text();
+
+    if (!response.ok) {
+      const message = typeof payload === 'string' ? payload : payload.detail || response.statusText;
+      throw new Error(message);
+    }
+
+    emit('success', `${method} ${path}`, `completed in ${Math.round(performance.now() - startedAt)}ms`);
+    return payload;
+  } catch (error) {
+    emit('error', `${method} ${path}`, error.message);
+    throw error;
+  }
+}
+
+export const get = (path) => request('GET', path);
+export const post = (path, body) => request('POST', path, body);
+export const patch = (path, body) => request('PATCH', path, body);
+export const del = (path) => request('DELETE', path);
+
+export const getHealth = () => get('/health');
+export const createCampaign = (name) => post('/campaigns', { name });
+export const getCampaign = (id) => get(`/campaigns/${encodeURIComponent(id)}`);
+export const sendCampaign = (id, payload) => post(`/campaigns/${encodeURIComponent(id)}/send`, payload);
+export const previewCompose = (payload) => post('/compose/preview', payload);
+export const analyzeCompose = (payload) => post('/compose/analyze', payload);
+export const getDomains = () => get('/domains');
+export const createDomain = (payload) => post('/domains', payload);
+export const getDomain = (id) => get(`/domains/${encodeURIComponent(id)}`);
+export const verifyDomain = (id) => post(`/domains/${encodeURIComponent(id)}/verify`, {});
+export const updateDmarcPolicy = (id, policy) => patch(`/domains/${encodeURIComponent(id)}/dmarc`, { policy });
+export const rotateDkim = (id) => post(`/domains/${encodeURIComponent(id)}/dkim/rotate`, {});
+export const deleteDomain = (id) => del(`/domains/${encodeURIComponent(id)}`);
+export const getDomainHistory = (id) => get(`/domains/${encodeURIComponent(id)}/history`);

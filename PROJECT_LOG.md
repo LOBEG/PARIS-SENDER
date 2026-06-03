@@ -45,6 +45,30 @@ critical security issues.
   - Quality gate: all new .py compile; `pytest tests/` = 10 passed;
     `unittest test_fixes.py` = 216 passed / 1 skipped (no regression).
   → **Phase 3/5 foundation gate validated.**
+- **Phase 2 — UI Migration (Tkinter → Electron):** scaffolded `electron/`
+  (Electron main + secure preload, Vite + React renderer, hot reload via
+  `concurrently`/`wait-on`). Built 8 screens (Dashboard, Campaign Manager,
+  Compose Editor, Contacts, Analytics, Settings, Logs, Domain Manager) wired to
+  FastAPI through `renderer/api/client.js`. Compose editor supports HTML + plain
+  text, live autograb-personalized preview (`/compose/preview`), and
+  Jinja/placeholder/spam/HTML-ratio validation (`/compose/analyze`); dead Tkinter
+  compose features omitted. Campaign send is UI-gated to verified domains and
+  passes `html` + non-SMTP delivery flags. New compose-analysis backend
+  (`backend/validators/compose.py`) + endpoints. Quality gate: `vite build`
+  compiles the renderer (45 modules); `node --check` clean on all plain JS;
+  `pytest tests/` green; `test_fixes.py` = 216 pass / 1 skip (no regression).
+  Screenshots require a local GUI run (no display in CI). See `PHASE2_LOG.md`.
+  → **Phase 2 gate validated (pending local GUI screenshots).**
+- **Phase 4 — Domain Management (DKIM/SPF/DMARC):** added
+  `backend/models/domain.py`, `backend/repositories/domain.py` (DomainRepository +
+  health history), and `backend/services/domain.py` (RSA-2048 DKIM key gen,
+  SPF/DMARC builders, injectable DNS verification, 0–100 health scoring). FastAPI
+  domain endpoints (add/list/get/verify/dmarc/dkim-rotate/delete/history) and an
+  Electron Domain Manager wizard. Campaign send enforces verified sender domains
+  (backward compatible for unmanaged domains). Quality gate: `pytest tests/` =
+  all green (incl. `test_domain.py`, `test_domain_api.py`); no delivery
+  regression. See `PHASE4_LOG.md`.
+  → **Phase 4 gate validated.**
 
 ## Remaining work (subsequent phases, async)
 
