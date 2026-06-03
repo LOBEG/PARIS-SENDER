@@ -1,6 +1,8 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, shell, dialog } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startBackend, stopBackend } from './backend.js';
+import { initAutoUpdate } from './updater.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,7 +58,24 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // In development the backend is started separately (npm run dev assumes the
+  // FastAPI server is already running on :8000). In the packaged app we launch
+  // and supervise the bundled backend executable before opening the UI.
+  if (!isDev) {
+    try {
+      await startBackend();
+    } catch (error) {
+      dialog.showErrorBox(
+        'Paris Sender',
+        `Failed to start the backend service.\n\n${error?.message || error}`
+      );
+      app.quit();
+      return;
+    }
+    initAutoUpdate();
+  }
+
   createWindow();
 
   app.on('activate', () => {
@@ -67,6 +86,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  stopBackend();
   if (process.platform !== 'darwin') {
     app.quit();
   }
