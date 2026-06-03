@@ -1,0 +1,29 @@
+# Secrets & encryption material — NEVER commit
+encryption.key
+*.key
+.env
+.env.*
+
+# Runtime logs & artifacts
+*.log
+paris_sender.log
+
+# Local state / databases
+*.db
+campaign_data.db
+warmup_schedule.json
+seed_list.json
+settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node / Electron
+node_modules/
+dist/
+build/
+out/

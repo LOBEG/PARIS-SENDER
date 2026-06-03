@@ -837,7 +837,25 @@ class ProxyVPSHandler:
         self._start_health_monitor()
 
     def _load_or_create_encryption_key(self):
-        """Load encryption key from file, or create and persist a new one."""
+        """Resolve the encryption key from a secure source.
+
+        Resolution order (most secure first):
+        1. Environment variable ``PARIS_SENDER_ENCRYPTION_KEY``.
+        2. A local, git-ignored key file (``encryption.key``) for dev fallback.
+        3. Generate a new key and persist it to the git-ignored file.
+
+        The key file must NEVER be committed to version control (see .gitignore).
+        """
+        # 1. Environment variable (preferred for production / VPS / CI).
+        env_key = os.environ.get("PARIS_SENDER_ENCRYPTION_KEY")
+        if env_key:
+            try:
+                key = env_key.strip().encode() if isinstance(env_key, str) else env_key
+                Fernet(key)  # Validate key
+                return key
+            except Exception:
+                logger.warning("PARIS_SENDER_ENCRYPTION_KEY is set but invalid; ignoring.")
+        # 2. Local git-ignored key file (developer fallback only).
         try:
             if os.path.exists(ENCRYPTION_KEY_FILE):
                 with open(ENCRYPTION_KEY_FILE, 'rb') as f:
@@ -846,6 +864,7 @@ class ProxyVPSHandler:
                 return key
         except Exception:
             pass
+        # 3. Generate a fresh key (rotates away from any previously exposed key).
         key = Fernet.generate_key()
         try:
             with open(ENCRYPTION_KEY_FILE, 'wb') as f:
