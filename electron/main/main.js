@@ -33,7 +33,18 @@ function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     const allowedDevUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
     const allowedProdUrl = new URL(`file://${path.join(__dirname, '../dist/index.html')}`).toString();
-    if (!url.startsWith(allowedDevUrl) && !url.startsWith(allowedProdUrl)) {
+    let target;
+    try {
+      target = new URL(url);
+    } catch {
+      event.preventDefault();
+      return;
+    }
+    const allowedOrigins = new Set();
+    try { allowedOrigins.add(new URL(allowedDevUrl).origin); } catch { /* ignore */ }
+    const isDevTarget = (target.protocol === 'http:' || target.protocol === 'https:') && allowedOrigins.has(target.origin);
+    const isProdTarget = target.protocol === 'file:' && url === allowedProdUrl;
+    if (!isDevTarget && !isProdTarget) {
       event.preventDefault();
     }
   });

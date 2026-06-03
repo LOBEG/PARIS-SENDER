@@ -246,7 +246,7 @@ def _enforce_domain(domains: DomainService, sender: str, enforce: bool) -> None:
     sender_domain = _sender_domain(sender)
     if sender_domain is None:
         return
-    registered = domains.repository.get_by_name(sender_domain)
+    registered = domains.get_domain_by_name(sender_domain)
     # Backward compatible: only enforce verification once the domain is managed.
     if registered is not None and not registered.is_verified:
         raise HTTPException(

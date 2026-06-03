@@ -232,6 +232,10 @@ class DomainService:
         domain = self.repository.get_by_name(name.strip().lower())
         return bool(domain and domain.is_verified)
 
+    def get_domain_by_name(self, name: str) -> Domain | None:
+        """Return a managed domain by name, or None if it is not managed."""
+        return self.repository.get_by_name(name.strip().lower())
+
     def _apply_status(self, domain: Domain) -> None:
         domain.health_score = self.health_score(domain)
         if domain.dkim_verified and domain.spf_verified and domain.dmarc_verified:
