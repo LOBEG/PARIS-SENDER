@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.models import Status, WarmupConfig
+from backend.models import HealthServer, Status, WarmupConfig
 from backend.repositories import DomainRepository, LedgerRepository, WarmupRepository
 from backend.services import (
     DeliverabilityService,
@@ -18,8 +18,11 @@ from backend.services import (
     DeliveryService,
     DomainError,
     DomainService,
+    HealthMonitorService,
     OutboundMessage,
     WarmupService,
+    start_health_monitor,
+    stop_health_monitor,
 )
 from backend.validators import AutograbService
 from backend.validators.compose import analyze_compose
@@ -128,11 +131,14 @@ def create_app(
     provider_factory: Callable[[], DeliveryProvider] | None = None,
     deliverability_service: DeliverabilityService | None = None,
     warmup_service: WarmupService | None = None,
+    health_service: HealthMonitorService | None = None,
+    health_servers: list[HealthServer | dict[str, Any]] | None = None,
     enforce_verified_domains: bool = True,
     min_deliverability_score: int = 70,
     enable_warmup_scheduler: bool = False,
+    enable_health_monitor: bool = False,
 ) -> FastAPI:
-    """Create a FastAPI app with injectable ledger, delivery, domain, score, and warmup services."""
+    """Create a FastAPI app with injectable ledger, delivery, domain, score, warmup, and health services."""
     app = FastAPI(title="Paris Sender Backend")
     repo_singleton = repository or (repository_factory() if repository_factory else LedgerRepository(":memory:"))
     provider_singleton = provider or (provider_factory() if provider_factory else ProviderNotConfigured())
@@ -141,7 +147,14 @@ def create_app(
         repo_singleton, domain_service_singleton, threshold=min_deliverability_score
     )
     warmup_singleton = warmup_service or WarmupService(WarmupRepository(":memory:"))
+    health_singleton = health_service or HealthMonitorService(
+        ledger=repo_singleton,
+        domain_service=domain_service_singleton,
+        warmup_service=warmup_singleton,
+        servers=health_servers,
+    )
     scheduler_task: asyncio.Task[Any] | None = None
+    health_monitor_task: asyncio.Task[Any] | None = None
     autograb = AutograbService()
 
     def get_repository() -> LedgerRepository:
@@ -159,6 +172,9 @@ def create_app(
     def get_warmup_service() -> WarmupService:
         return warmup_singleton
 
+    def get_health_service() -> HealthMonitorService:
+        return health_singleton
+
     if enable_warmup_scheduler:
         @app.on_event("startup")
         async def _start_warmup_scheduler() -> None:
@@ -170,9 +186,37 @@ def create_app(
             if scheduler_task is not None:
                 scheduler_task.cancel()
 
+    if enable_health_monitor:
+        @app.on_event("startup")
+        async def _start_health_monitor() -> None:
+            nonlocal health_monitor_task
+            health_monitor_task = start_health_monitor(health_singleton)
+
+        @app.on_event("shutdown")
+        async def _stop_health_monitor() -> None:
+            await stop_health_monitor(health_monitor_task)
+
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/status")
+    def health_status(health_monitor: HealthMonitorService = Depends(get_health_service)) -> dict[str, Any]:
+        return health_monitor.snapshot()
+
+    @app.get("/health/domain/{domain}")
+    def health_domain(domain: str, health_monitor: HealthMonitorService = Depends(get_health_service)) -> dict[str, Any]:
+        try:
+            return health_monitor.domain_health(domain)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/health/server/{server_id}")
+    def health_server(server_id: str, health_monitor: HealthMonitorService = Depends(get_health_service)) -> dict[str, Any]:
+        try:
+            return health_monitor.server_health(server_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/campaigns", status_code=201)
     def create_campaign(payload: CampaignCreate, repo: LedgerRepository = Depends(get_repository)) -> dict[str, Any]:

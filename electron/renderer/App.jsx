@@ -12,8 +12,9 @@ import Logs from './pages/Logs.jsx';
 import DomainManager from './pages/DomainManager.jsx';
 import Deliverability from './pages/Deliverability.jsx';
 import Warmup from './pages/Warmup.jsx';
+import HealthMonitor from './pages/HealthMonitor.jsx';
 
-const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains', 'Deliverability', 'Warmup'];
+const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Domains', 'Deliverability', 'Warmup', 'Health'];
 
 export default function App() {
   const [active, setActive] = useState('Dashboard');
@@ -48,6 +49,7 @@ export default function App() {
       case 'Domains': return <DomainManager />;
       case 'Deliverability': return <Deliverability />;
       case 'Warmup': return <Warmup />;
+      case 'Health': return <HealthMonitor />;
       default: return <Dashboard onNavigate={setActive} />;
     }
   }, [active]);

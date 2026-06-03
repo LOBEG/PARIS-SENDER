@@ -60,6 +60,9 @@ export const patch = (path, body) => request('PATCH', path, body);
 export const del = (path) => request('DELETE', path);
 
 export const getHealth = () => get('/health');
+export const getHealthStatus = () => get('/health/status');
+export const getDomainHealth = (domain) => get(`/health/domain/${encodeURIComponent(domain)}`);
+export const getServerHealth = (id) => get(`/health/server/${encodeURIComponent(id)}`);
 export const createCampaign = (name) => post('/campaigns', { name });
 export const getCampaign = (id) => get(`/campaigns/${encodeURIComponent(id)}`);
 export const getCampaignScore = (id) => get(`/campaigns/${encodeURIComponent(id)}/score`);

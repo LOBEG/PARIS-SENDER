@@ -8,7 +8,8 @@ const icons = {
   Logs: '☰',
   Domains: '◎',
   Deliverability: '◉',
-  Warmup: '↗'
+  Warmup: '↗',
+  Health: '♥'
 };
 
 export default function Sidebar({ screens, active, onChange }) {

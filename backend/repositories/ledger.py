@@ -225,6 +225,27 @@ class LedgerRepository:
             rollups[Status(row["status"])] = int(row["count"])
         return rollups
 
+    def status_counts(self, *, table: str = "messages") -> dict[Status, int]:
+        """Count current statuses across all messages or recipients."""
+        if table not in {"messages", "recipients"}:
+            raise ValueError("table must be 'messages' or 'recipients'")
+        rows = self.connection.execute(f"SELECT status, COUNT(*) AS count FROM {table} GROUP BY status").fetchall()
+        counts = {status: 0 for status in Status}
+        for row in rows:
+            counts[Status(row["status"])] = int(row["count"])
+        return counts
+
+    def event_status_counts_since(self, since: datetime) -> dict[Status, int]:
+        """Count ledger event statuses since an inclusive timestamp."""
+        rows = self.connection.execute(
+            "SELECT status, COUNT(*) AS count FROM events WHERE created_at >= ? GROUP BY status",
+            (_dt_to_text(since),),
+        ).fetchall()
+        counts = {status: 0 for status in Status}
+        for row in rows:
+            counts[Status(row["status"])] = int(row["count"])
+        return counts
+
     def close(self) -> None:
         """Close the underlying connection."""
         self.connection.close()
