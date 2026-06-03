@@ -20,6 +20,13 @@ function emit(level, action, details) {
   emitApiLog({ level, action, details });
 }
 
+function validateJsonPayload(payload) {
+  if (payload === null || (typeof payload !== 'object' && !Array.isArray(payload))) {
+    throw new Error('Invalid API JSON response');
+  }
+  return payload;
+}
+
 async function request(method, path, body) {
   const url = `${BASE_URL}${path}`;
   const options = {
@@ -39,7 +46,7 @@ async function request(method, path, body) {
     emit('info', `${method} ${path}`, body ? 'request sent' : 'request sent without body');
     const response = await fetch(url, options);
     const contentType = response.headers.get('content-type') || '';
-    const payload = contentType.includes('application/json') ? await response.json() : await response.text();
+    const payload = contentType.includes('application/json') ? validateJsonPayload(await response.json()) : await response.text();
 
     if (!response.ok) {
       const message = typeof payload === 'string' ? payload : payload.detail || response.statusText;

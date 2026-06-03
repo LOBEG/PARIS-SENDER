@@ -7,8 +7,12 @@ import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from backend.models import Domain, DomainStatus
+
+if TYPE_CHECKING:
+    from backend.services.security import SecurityService
 
 ConnectionFactory = Callable[[], sqlite3.Connection]
 
@@ -36,9 +40,11 @@ class DomainRepository:
         self,
         database: str | Path = "domains.sqlite3",
         connection_factory: ConnectionFactory | None = None,
+        security_service: SecurityService | None = None,
     ) -> None:
         self.database = str(database)
         self._connection_factory = connection_factory or self._default_connection_factory
+        self._security_service = security_service
         self._connection = self._connection_factory()
         self._connection.row_factory = sqlite3.Row
         self.create_schema()
@@ -173,12 +179,29 @@ class DomainRepository:
                 (domain.id, domain.health_score, domain.status.value, _dt_to_text(_utc_now())),
             )
 
+    @property
+    def security_service(self) -> SecurityService:
+        """Return the encryption service used for DKIM secrets."""
+        if self._security_service is None:
+            from backend.services.security import SecurityService
+
+            self._security_service = SecurityService()
+        return self._security_service
+
+    def _encrypt_dkim_key(self, value: str | None) -> str | None:
+        if value is None or self.security_service.is_encrypted(value):
+            return value
+        return self.security_service.encrypt(value)
+
+    def _decrypt_dkim_key(self, value: str | None) -> str | None:
+        return self.security_service.decrypt_or_plaintext(value)
+
     def _to_params(self, domain: Domain) -> tuple[object, ...]:
         return (
             domain.name,
             domain.status.value,
             domain.dkim_selector,
-            domain.dkim_private_key,
+            self._encrypt_dkim_key(domain.dkim_private_key),
             domain.dkim_public_key,
             domain.spf_record,
             domain.dmarc_record,
@@ -199,7 +222,7 @@ class DomainRepository:
             name=row["name"],
             status=DomainStatus(row["status"]),
             dkim_selector=row["dkim_selector"],
-            dkim_private_key=row["dkim_private_key"],
+            dkim_private_key=self._decrypt_dkim_key(row["dkim_private_key"]),
             dkim_public_key=row["dkim_public_key"],
             spf_record=row["spf_record"],
             dmarc_record=row["dmarc_record"],

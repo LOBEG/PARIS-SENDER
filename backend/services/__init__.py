@@ -14,6 +14,7 @@ from .domain import (
 from .health import HealthMonitorService, ServerProbe, SmtplibProbe, start_health_monitor, stop_health_monitor
 from .logging_service import LoggingService, start_log_archiver, stop_log_archiver
 from .mime import build_mime_message
+from .security import SecurityService
 from .warmup import WarmupDecision, WarmupService, start_warmup_scheduler, stop_warmup_scheduler
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "OutboundMessage",
     "SMTPConfig",
     "SMTPDeliveryProvider",
+    "SecurityService",
     "ServerProbe",
     "SmtplibProbe",
     "WarmupDecision",

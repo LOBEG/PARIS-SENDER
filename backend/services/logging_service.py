@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -13,6 +14,22 @@ from backend.repositories import LogRepository
 
 Clock = Callable[[], datetime]
 AlertSink = Callable[[LogEntry], None]
+
+_REDACTED = "[REDACTED]"
+_SENSITIVE_KEYS = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "dkim_private_key",
+    "password",
+    "secret",
+    "smtp_pass",
+    "smtp_password",
+    "token",
+}
+_SENSITIVE_MESSAGE_RE = re.compile(
+    r"(?i)(password|smtp_pass|smtp_password|token|secret|api[_-]?key|authorization)(\s*[=:]?\s*)([^\s,;]+)"
+)
 
 
 class LoggingService:
@@ -35,8 +52,8 @@ class LoggingService:
             timestamp=self._now(),
             severity=self._coerce_severity(severity),
             component=self._coerce_component(component),
-            message=message,
-            context=context,
+            message=self._redact_message(message),
+            context=self._redact_context(context),
         )
         stored = self.repository.append(entry)
         saved = LogEntry(
@@ -120,6 +137,25 @@ class LoggingService:
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
+
+    def _redact_context(self, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {
+                key: _REDACTED if self._is_sensitive_key(str(key)) else self._redact_context(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [self._redact_context(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._redact_context(item) for item in value)
+        return value
+
+    def _redact_message(self, message: str) -> str:
+        return _SENSITIVE_MESSAGE_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}{_REDACTED}", message)
+
+    def _is_sensitive_key(self, key: str) -> bool:
+        normalized = key.strip().lower().replace("-", "_")
+        return normalized in _SENSITIVE_KEYS or any(part in normalized for part in ("password", "secret", "token"))
 
     def _coerce_severity(self, value: LogSeverity | str) -> LogSeverity:
         return value if isinstance(value, LogSeverity) else LogSeverity(str(value).strip().upper())

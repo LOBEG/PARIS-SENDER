@@ -30,6 +30,8 @@ from backend.services import (
 from backend.validators import AutograbService
 from backend.validators.compose import analyze_compose
 
+from .security import AuthMiddleware, RateLimitMiddleware
+
 
 class CampaignCreate(BaseModel):
     """Request to create a campaign."""
@@ -142,9 +144,22 @@ def create_app(
     enable_warmup_scheduler: bool = False,
     enable_health_monitor: bool = False,
     enable_log_archiver: bool = False,
+    enable_auth: bool = False,
+    enable_rate_limit: bool = False,
+    jwt_secret: str | None = None,
+    rate_limit_requests: int = 60,
+    rate_limit_window_seconds: int = 60,
 ) -> FastAPI:
-    """Create a FastAPI app with injectable ledger, delivery, domain, score, warmup, and health services."""
+    """Create a FastAPI app with injectable services and opt-in security controls."""
     app = FastAPI(title="Paris Sender Backend")
+    if enable_rate_limit:
+        app.add_middleware(
+            RateLimitMiddleware,
+            requests=rate_limit_requests,
+            window_seconds=rate_limit_window_seconds,
+        )
+    if enable_auth:
+        app.add_middleware(AuthMiddleware, secret=jwt_secret)
     repo_singleton = repository or (repository_factory() if repository_factory else LedgerRepository(":memory:"))
     provider_singleton = provider or (provider_factory() if provider_factory else ProviderNotConfigured())
     domain_service_singleton = domain_service or DomainService(domain_repository or DomainRepository(":memory:"))

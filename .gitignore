@@ -3,6 +3,7 @@ encryption.key
 *.key
 .env
 .env.*
+!.env.example
 
 # Runtime logs & artifacts
 *.log
