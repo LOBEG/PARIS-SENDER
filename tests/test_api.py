@@ -33,3 +33,17 @@ def test_api_create_send_status_and_health():
     status = client.get(f"/campaigns/{campaign_id}")
     assert status.status_code == 200
     assert status.json()["status_rollups"]["SENT"] == 1
+
+
+def test_root_and_favicon_routes_do_not_404():
+    from fastapi.testclient import TestClient
+
+    app = create_app(repository=LedgerRepository(":memory:"), provider=FakeProvider())
+    client = TestClient(app)
+
+    root = client.get("/")
+    assert root.status_code == 200
+    assert "Paris Sender backend is running" in root.text
+
+    favicon = client.get("/favicon.ico")
+    assert favicon.status_code == 204

@@ -6,7 +6,8 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from backend.models import HealthServer, LogComponent, LogSeverity, Status, WarmupConfig
@@ -250,6 +251,33 @@ def create_app(
         @app.on_event("shutdown")
         async def _stop_log_archiver() -> None:
             await stop_log_archiver(log_archiver_task)
+
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def index() -> str:
+        # Friendly landing page so opening the backend root in a browser (or an
+        # Electron probe) shows a clear "service is running" status instead of a
+        # bare 404, which previously made the standalone executable look broken.
+        return (
+            "<!doctype html><html lang=\"en\"><head>"
+            "<meta charset=\"utf-8\"><title>Paris Sender Backend</title>"
+            "<style>body{font-family:system-ui,sans-serif;background:#0f172a;"
+            "color:#e2e8f0;display:flex;min-height:100vh;align-items:center;"
+            "justify-content:center;margin:0}main{text-align:center}"
+            "code{background:#1e293b;padding:2px 6px;border-radius:4px}"
+            "a{color:#38bdf8}</style></head><body><main>"
+            "<h1>Paris Sender backend is running</h1>"
+            "<p>This is the local API service. The desktop app talks to it "
+            "automatically.</p>"
+            "<p>Health check: <a href=\"/health\"><code>/health</code></a> &middot; "
+            "API docs: <a href=\"/docs\"><code>/docs</code></a></p>"
+            "</main></body></html>"
+        )
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon() -> Response:
+        # Browsers automatically request /favicon.ico; return 204 so it does not
+        # surface as a noisy 404 in the server console.
+        return Response(status_code=204)
 
     @app.get("/health")
     def health() -> dict[str, str]:
