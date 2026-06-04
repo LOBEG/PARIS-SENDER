@@ -84,7 +84,7 @@ export default function App() {
     : health.status === 'checking' || health.status === 'starting'
       ? 'warning'
       : 'danger';
-  const healthLabel = health.status === 'starting' ? 'Starting backend…' : `Backend: ${health.status}`;
+  const healthLabel = health.status === 'starting' ? 'Starting backend...' : `Backend: ${health.status}`;
 
   return (
     <div className="app-shell">
