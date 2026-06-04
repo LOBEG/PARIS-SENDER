@@ -20,7 +20,7 @@
     "react-dom": "latest"
   },
   "build": {
-    "appId": "com.parissender.app",
+    "appId": "com.paris.sender",
     "productName": "PARIS SENDER",
     "directories": {
       "output": "out",
