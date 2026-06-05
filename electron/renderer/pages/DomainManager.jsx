@@ -57,7 +57,30 @@ export default function DomainManager() {
 
   useEffect(() => {
     setDiagnosis(null);
-    loadSelected(selectedId).catch((err) => setError(err.message));
+    let cancelled = false;
+    (async () => {
+      try {
+        await loadSelected(selectedId);
+        if (cancelled || !selectedId) return;
+        // Smoothly auto-trigger the same bounded multi-resolver scan when an
+        // already-added but still-unverified domain is selected, so the user
+        // never has to click "Verify" themselves. Re-checks the latest state to
+        // avoid racing the load above and avoids re-scanning verified domains.
+        const fresh = await getDomain(selectedId).catch(() => null);
+        if (cancelled || !fresh) return;
+        const alreadyVerified = fresh.is_verified || fresh.status === 'VERIFIED';
+        const scanInFlight = scan && scan.domainId === selectedId && !scan.verified;
+        if (!alreadyVerified && !scanInFlight) {
+          runAutoScan(selectedId);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
   function stopScan() {
