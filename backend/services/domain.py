@@ -363,9 +363,9 @@ class DomainService:
     def _diagnose_record(self, record: DnsRecord, provider: DnsProviderInfo) -> dict[str, object]:
         try:
             published = self.resolver.resolve_txt(record.host)
-        except Exception as exc:  # noqa: BLE001 - defensive; report instead of crashing
+        except Exception:  # noqa: BLE001 - defensive; report a generic message instead of crashing
             published = []
-            lookup_error: str | None = str(exc)
+            lookup_error: str | None = f"DNS lookup failed for '{record.host}'."
         else:
             lookup_error = None
         verified, error = self._check_record(record, published=published, lookup_error=lookup_error)
