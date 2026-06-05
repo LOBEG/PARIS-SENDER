@@ -57,6 +57,125 @@ class DnspythonResolver:
                 records.append(str(rdata).strip('"'))
         return records
 
+    def resolve_ns(self, host: str) -> list[str]:
+        """Return the authoritative name servers for ``host`` (lower-cased, no trailing dot)."""
+        import dns.resolver  # imported lazily so the dependency is optional in tests
+
+        try:
+            answers = dns.resolver.resolve(host, "NS")
+        except Exception:
+            return []
+        servers: list[str] = []
+        for rdata in answers:
+            target = str(getattr(rdata, "target", rdata)).strip().rstrip(".").lower()
+            if target:
+                servers.append(target)
+        return servers
+
+
+# Ordered (most specific first) signatures mapping a name-server substring to the
+# DNS provider that operates it. Used to detect where a domain's DNS is hosted so
+# the UI can show provider-specific instructions for publishing DKIM/SPF/DMARC.
+_DNS_PROVIDER_SIGNATURES: tuple[tuple[str, str], ...] = (
+    ("cloudflare", "Cloudflare"),
+    ("awsdns", "AWS Route 53"),
+    ("domaincontrol.com", "GoDaddy"),
+    ("googledomains.com", "Google Domains"),
+    ("registrar-servers.com", "Namecheap"),
+    ("namecheaphosting.com", "Namecheap"),
+    ("dnsmadeeasy.com", "DNS Made Easy"),
+    ("digitalocean.com", "DigitalOcean"),
+    ("azure-dns", "Azure DNS"),
+    ("nsone.net", "NS1"),
+    ("dns.he.net", "Hurricane Electric"),
+    ("name.com", "Name.com"),
+    ("gandi.net", "Gandi"),
+    ("ovh.net", "OVH"),
+    ("bluehost.com", "Bluehost"),
+    ("hostgator.com", "HostGator"),
+    ("dreamhost.com", "DreamHost"),
+    ("wpengine.com", "WP Engine"),
+    ("squarespacedns.com", "Squarespace"),
+    ("wixdns.net", "Wix"),
+    ("shopify.com", "Shopify"),
+    ("vercel-dns.com", "Vercel"),
+    ("nsone.net", "NS1"),
+    ("linode.com", "Linode"),
+    ("hetzner.com", "Hetzner"),
+    ("zoneedit.com", "ZoneEdit"),
+    ("googledomains", "Google Domains"),
+    ("google.com", "Google Cloud DNS"),
+)
+
+# Providers that historically auto-append the domain to a TXT host name. For these
+# the operator must enter the host WITHOUT the trailing domain to avoid a doubled
+# name like ``selector._domainkey.example.com.example.com``.
+_HOST_SUFFIX_STRIPPING_PROVIDERS = frozenset({"GoDaddy", "Namecheap", "Bluehost", "HostGator", "Cloudflare"})
+
+
+@dataclass(slots=True)
+class DnsProviderInfo:
+    """Detected DNS provider for a domain plus actionable publishing guidance."""
+
+    provider: str
+    nameservers: list[str]
+    guidance: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"provider": self.provider, "nameservers": list(self.nameservers), "guidance": self.guidance}
+
+
+def detect_dns_provider(domain: str, resolver: object | None = None) -> DnsProviderInfo:
+    """Detect which DNS provider hosts ``domain`` by inspecting its name servers.
+
+    Returns the matched provider name (or ``"Unknown"``), the resolved name
+    servers, and provider-specific guidance the operator can follow to publish
+    the DKIM/SPF/DMARC records correctly. The resolver only needs an optional
+    ``resolve_ns`` method; if it is missing or returns nothing the provider is
+    reported as ``"Unknown"`` without raising.
+    """
+    normalized = domain.strip().lower().rstrip(".")
+    nameservers: list[str] = []
+    resolve_ns = getattr(resolver, "resolve_ns", None) if resolver is not None else None
+    if callable(resolve_ns):
+        try:
+            nameservers = list(resolve_ns(normalized))
+        except Exception:  # noqa: BLE001 - detection must never crash verification
+            nameservers = []
+
+    provider = "Unknown"
+    for ns in nameservers:
+        host = ns.lower()
+        for signature, name in _DNS_PROVIDER_SIGNATURES:
+            if signature in host:
+                provider = name
+                break
+        if provider != "Unknown":
+            break
+
+    return DnsProviderInfo(provider=provider, nameservers=nameservers, guidance=_provider_guidance(provider))
+
+
+def _provider_guidance(provider: str) -> str:
+    if provider == "Unknown":
+        return (
+            "Could not identify the DNS provider automatically. Add the records in the DNS "
+            "zone editor at your registrar/host. For TXT records, enter the host exactly as "
+            "shown and paste the full value on one line."
+        )
+    base = f"DNS appears to be hosted at {provider}. "
+    if provider in _HOST_SUFFIX_STRIPPING_PROVIDERS:
+        return base + (
+            "When adding TXT records there, enter only the host/name portion WITHOUT the "
+            "trailing domain (e.g. use 'selector._domainkey' and '_dmarc', not the full "
+            "name) because the provider appends the domain automatically. Paste the full "
+            "record value unbroken."
+        )
+    return base + (
+        "Add each record in its DNS editor using the exact host shown and paste the full "
+        "value on a single line (some editors split long DKIM keys automatically)."
+    )
+
 
 @dataclass(slots=True)
 class DkimKeyPair:
@@ -208,6 +327,96 @@ class DomainService:
         self._apply_status(domain)
         return self.repository.update(domain)
 
+    def diagnose_domain(self, domain_id: int) -> dict[str, object]:
+        """Run a deep, accurate per-record DNS search with provider-aware guidance.
+
+        This re-runs the DKIM/SPF/DMARC checks (persisting the refreshed status)
+        and, for every record, returns the host queried, the expected value, the
+        values actually published, whether it matched, and a precise, actionable
+        hint when it does not. It also detects the domain's DNS provider so the
+        UI can show provider-specific publishing instructions. This is what turns
+        an opaque "DKIM/DMARC failing" into a concrete fix.
+        """
+        domain = self.verify_domain(domain_id)
+        provider = detect_dns_provider(domain.name, self.resolver)
+        record_reports: list[dict[str, object]] = []
+        for record in self.required_records(domain):
+            record_reports.append(self._diagnose_record(record, provider))
+        verified = [r for r in record_reports if r["verified"]]
+        failing = [r for r in record_reports if not r["verified"]]
+        summary = (
+            "All authentication records are published correctly."
+            if not failing
+            else "Failing: " + ", ".join(str(r["record_type"]) for r in failing)
+        )
+        return {
+            "domain": domain.name,
+            "status": domain.status.value,
+            "health_score": domain.health_score,
+            "provider": provider.to_dict(),
+            "records": record_reports,
+            "summary": summary,
+            "verified_count": len(verified),
+            "failing_count": len(failing),
+        }
+
+    def _diagnose_record(self, record: DnsRecord, provider: DnsProviderInfo) -> dict[str, object]:
+        try:
+            published = self.resolver.resolve_txt(record.host)
+        except Exception as exc:  # noqa: BLE001 - defensive; report instead of crashing
+            published = []
+            lookup_error: str | None = str(exc)
+        else:
+            lookup_error = None
+        verified, error = self._check_record(record, published=published, lookup_error=lookup_error)
+        hint = "" if verified else self._record_hint(record, published, provider)
+        return {
+            "record_type": record.record_type.value,
+            "host": record.host,
+            "expected": record.value,
+            "published": list(published),
+            "verified": verified,
+            "error": error,
+            "hint": hint,
+        }
+
+    def _record_hint(self, record: DnsRecord, published: list[str], provider: DnsProviderInfo) -> str:
+        suffix = f" {provider.guidance}" if provider.provider != "Unknown" else ""
+        if not published:
+            if record.record_type is RecordType.DKIM:
+                return (
+                    f"No TXT record was found at '{record.host}'. Publish the DKIM key at this exact "
+                    f"host (selector '{record.host.split('._domainkey.')[0]}')." + suffix
+                )
+            if record.record_type is RecordType.DMARC:
+                return f"No TXT record was found at '{record.host}'. Publish the DMARC record at this exact host." + suffix
+            return f"No TXT record was found at '{record.host}'. Publish the SPF record at the domain root." + suffix
+
+        if record.record_type is RecordType.DKIM:
+            expected_token = self._dkim_public_token(record.value)
+            has_dkim = any("v=dkim1" in entry.lower() for entry in published)
+            if not has_dkim:
+                return (
+                    f"A TXT record exists at '{record.host}' but none start with 'v=DKIM1'. It may be the "
+                    "wrong selector or a different record — replace it with the DKIM value shown." + suffix
+                )
+            if expected_token and not any(expected_token in entry.replace(" ", "") for entry in published):
+                return (
+                    "A DKIM record is published but its public key does not match this domain's key. The "
+                    "value was likely truncated or split into multiple strings — re-paste the full 'p=' "
+                    "key on one line, or rotate DKIM and republish." + suffix
+                )
+            return "DKIM record found but did not match; re-publish the exact value shown." + suffix
+        if record.record_type is RecordType.SPF:
+            return (
+                f"TXT records exist at '{record.host}' but none start with 'v=spf1'. Add an SPF record "
+                "beginning with 'v=spf1' (keep only one SPF record per domain)." + suffix
+            )
+        return (
+            f"TXT records exist at '{record.host}' but none start with 'v=DMARC1'. Ensure the DMARC record "
+            "is published at exactly this host and begins with 'v=DMARC1'." + suffix
+        )
+
     def health_score(self, domain: Domain) -> int:
         """Compute a 0-100 health score from verified records and DMARC strictness."""
         score = 0
@@ -245,11 +454,20 @@ class DomainService:
         else:
             domain.status = DomainStatus.PENDING
 
-    def _check_record(self, record: DnsRecord) -> tuple[bool, str | None]:
-        try:
-            published = self.resolver.resolve_txt(record.host)
-        except Exception as exc:  # pragma: no cover - defensive
-            return False, str(exc)
+    def _check_record(
+        self,
+        record: DnsRecord,
+        *,
+        published: list[str] | None = None,
+        lookup_error: str | None = None,
+    ) -> tuple[bool, str | None]:
+        if published is None:
+            try:
+                published = self.resolver.resolve_txt(record.host)
+            except Exception as exc:  # pragma: no cover - defensive
+                return False, str(exc)
+        if lookup_error is not None:
+            return False, lookup_error
         if not published:
             return False, "no TXT record published"
         if record.record_type is RecordType.DKIM:
