@@ -1,0 +1,4 @@
+# This directory holds runtime logs written by the backend, including
+# startup.log (created by backend/main.py). Log files themselves are
+# gitignored (*.log); this placeholder keeps the directory in version control
+# so the packaged app always has a logs/ folder to write into.
