@@ -7,26 +7,36 @@ import { useEffect, useState } from 'react';
  * available, downloading, ready to install, or the last check errored). All
  * values come from real electron-updater events via the preload bridge — never
  * fabricated. In the browser/dev build (no parisAPI.updates) it renders nothing.
+ *
+ * Reactivity: when a `status` prop is supplied (from the centralized
+ * `useUpdateStatus` hook) the banner reflects update-state changes immediately.
+ * When no prop is given it falls back to subscribing to the bridge directly so
+ * it remains usable in isolation.
+ *
+ * @param {{ status?: object|null, onInstall?: () => Promise<any> }} props
  */
-export default function UpdateBanner() {
+export default function UpdateBanner({ status: statusProp, onInstall } = {}) {
   const updates = typeof window !== 'undefined' ? window.parisAPI?.updates : null;
-  const [status, setStatus] = useState(null);
+  const controlled = statusProp !== undefined;
+  const [localStatus, setLocalStatus] = useState(null);
   const [installing, setInstalling] = useState(false);
 
   useEffect(() => {
-    if (!updates) return undefined;
+    if (controlled || !updates) return undefined;
     let active = true;
     updates.getStatus?.().then((s) => {
-      if (active) setStatus(s);
+      if (active) setLocalStatus(s);
     }).catch(() => {});
     const unsubscribe = updates.onStatus?.((s) => {
-      if (active) setStatus(s);
+      if (active) setLocalStatus(s);
     });
     return () => {
       active = false;
       if (typeof unsubscribe === 'function') unsubscribe();
     };
-  }, [updates]);
+  }, [updates, controlled]);
+
+  const status = controlled ? statusProp : localStatus;
 
   if (!updates || !status) return null;
 
@@ -38,7 +48,11 @@ export default function UpdateBanner() {
   async function handleInstall() {
     setInstalling(true);
     try {
-      await updates.install();
+      if (onInstall) {
+        await onInstall();
+      } else {
+        await updates.install();
+      }
     } catch {
       setInstalling(false);
     }
