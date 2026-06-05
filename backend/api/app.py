@@ -38,6 +38,7 @@ from backend.validators import AutograbService
 from backend.validators.compose import analyze_compose
 
 from backend.api.security import AuthMiddleware, RateLimitMiddleware
+from backend.version import BACKEND_VERSION
 
 
 # Origins used by the local desktop UI. ``null`` covers pages loaded from
@@ -358,7 +359,52 @@ def create_app(
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "version": BACKEND_VERSION}
+
+    @app.get("/version")
+    def version() -> dict[str, str]:
+        return {"version": BACKEND_VERSION}
+
+    @app.get("/diagnostics")
+    def diagnostics(
+        health_monitor: HealthMonitorService = Depends(get_health_service),
+        logger: LoggingService = Depends(get_logging_service),
+        repository: LedgerRepository = Depends(get_repository),
+    ) -> dict[str, Any]:
+        """Aggregate observability snapshot for the desktop diagnostics panel.
+
+        Combines the backend version, database reachability, the live health
+        snapshot (delivery/DNS/server probes) and the most recent error from the
+        structured log so the UI can render a single source of truth without
+        fabricating any status.
+        """
+        database_ok = True
+        database_error: str | None = None
+        try:
+            repository.list_campaigns()
+        except Exception as exc:  # pragma: no cover - defensive
+            database_ok = False
+            database_error = str(exc)
+
+        try:
+            health_snapshot = health_monitor.snapshot()
+        except Exception as exc:  # pragma: no cover - defensive
+            health_snapshot = {"error": str(exc)}
+
+        last_error: dict[str, Any] | None = None
+        try:
+            recent = logger.query(severity=LogSeverity.ERROR.value, limit=1)
+            if recent:
+                last_error = recent[0]
+        except Exception:  # pragma: no cover - defensive
+            last_error = None
+
+        return {
+            "backend_version": BACKEND_VERSION,
+            "database": {"ok": database_ok, "error": database_error},
+            "health": health_snapshot,
+            "last_error": last_error,
+        }
 
     @app.get("/health/status")
     def health_status(health_monitor: HealthMonitorService = Depends(get_health_service)) -> dict[str, Any]:
