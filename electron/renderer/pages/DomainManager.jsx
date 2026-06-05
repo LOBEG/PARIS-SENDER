@@ -4,15 +4,21 @@ import { StatusBadge, VerifiedBadge } from '../components/Badge.jsx';
 import CopyButton from '../components/CopyButton.jsx';
 import HealthBars from '../components/HealthBars.jsx';
 
-const initialForm = { name: '', selector: 'default', spf_includes: '' };
+const initialForm = { name: '', spf_includes: '' };
 
-// Bounded auto-scan tuning: small, fast retries so the UI never hangs while DNS
-// records propagate. Each attempt runs a deep multi-resolver DKIM/SPF/DMARC scan
-// server-side; we stop the moment the domain verifies.
-const SCAN_MAX_ATTEMPTS = 6;
-const SCAN_INTERVAL_MS = 3000;
+// Provider-aware exponential backoff between DNS scan attempts. DNS records take
+// time to propagate, so each retry waits longer than the last. The scan stops
+// early the moment the domain is fully verified (DNS + provider).
+const SCAN_BACKOFF_MS = [10000, 30000, 60000, 120000, 300000];
+const SCAN_MAX_ATTEMPTS = SCAN_BACKOFF_MS.length + 1;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A domain is only truly "verified" for sending when every DNS record passes AND
+// the upstream email provider has independently verified it. DNS success alone
+// must never be presented as a green/verified state.
+const dnsValid = (domain) => Boolean(domain && domain.spf_verified && domain.dkim_verified && domain.dmarc_verified);
+const fullyVerified = (domain) => dnsValid(domain) && Boolean(domain && domain.provider_verified);
 
 export default function DomainManager() {
   const [domains, setDomains] = useState([]);
@@ -60,19 +66,10 @@ export default function DomainManager() {
     let cancelled = false;
     (async () => {
       try {
+        // Selecting a domain only loads its current state. DNS scanning never
+        // starts automatically — the operator must explicitly click
+        // "Start verification" (and the provider gate must be satisfied first).
         await loadSelected(selectedId);
-        if (cancelled || !selectedId) return;
-        // Smoothly auto-trigger the same bounded multi-resolver scan when an
-        // already-added but still-unverified domain is selected, so the user
-        // never has to click "Verify" themselves. Re-checks the latest state to
-        // avoid racing the load above and avoids re-scanning verified domains.
-        const fresh = await getDomain(selectedId).catch(() => null);
-        if (cancelled || !fresh) return;
-        const alreadyVerified = fresh.is_verified || fresh.status === 'VERIFIED';
-        const scanInFlight = scan && scan.domainId === selectedId && !scan.verified;
-        if (!alreadyVerified && !scanInFlight) {
-          runAutoScan(selectedId);
-        }
       } catch (err) {
         if (!cancelled) setError(err.message);
       }
@@ -88,12 +85,19 @@ export default function DomainManager() {
     setScan(null);
   }
 
-  // Automatically scan DKIM/SPF/DMARC and poll until the domain verifies, so the
-  // operator never has to click "Verify" repeatedly. Each attempt is a deep,
-  // multi-resolver server-side scan; the loop is bounded and cancellable so it
-  // stays fast and never hangs.
+  // Run the DKIM/SPF/DMARC scan and poll with exponential backoff until the
+  // domain is fully verified. The scan is gated on provider verification: DNS
+  // can only be trusted once the upstream provider has confirmed the domain.
   async function runAutoScan(domainId) {
     if (!domainId) return;
+    // Provider verification gate — block the scan when the provider has not yet
+    // confirmed the domain.
+    const current = selected && selected.id === domainId ? selected : await getDomain(domainId).catch(() => null);
+    if (!current || !current.provider_verified) {
+      setScan(null);
+      setError('Domain must be verified with email provider before DNS scan');
+      return;
+    }
     const token = (scanTokenRef.current += 1);
     setError('');
     let result = null;
@@ -109,14 +113,21 @@ export default function DomainManager() {
         return;
       }
       if (scanTokenRef.current !== token) return;
-      setSelected((current) => (current && current.id === domainId ? result : current));
-      await loadDomains().catch(() => {});
-      if (result.is_verified || result.status === 'VERIFIED') {
-        setScan({ domainId, attempt, maxAttempts: SCAN_MAX_ATTEMPTS, verified: true, message: 'Domain verified — DKIM, SPF and DMARC all match.' });
+      // Update only the selected domain's state — never refresh the full list
+      // inside the scan loop.
+      setSelected((curr) => (curr && curr.id === domainId ? result : curr));
+      if (fullyVerified(result)) {
+        setScan({ domainId, attempt, maxAttempts: SCAN_MAX_ATTEMPTS, verified: true, message: 'Domain verified — DNS and provider confirmed. Sending is enabled.' });
+        return;
+      }
+      if (dnsValid(result)) {
+        // DNS is correct but the provider has not confirmed sending yet; never
+        // present this as a fully verified state.
+        setScan({ domainId, attempt, maxAttempts: SCAN_MAX_ATTEMPTS, verified: false, message: 'DNS verified. Awaiting provider confirmation for sending activation.' });
         return;
       }
       if (attempt < SCAN_MAX_ATTEMPTS) {
-        await sleep(SCAN_INTERVAL_MS);
+        await sleep(SCAN_BACKOFF_MS[attempt - 1]);
       }
     }
     if (scanTokenRef.current !== token) return;
@@ -140,17 +151,17 @@ export default function DomainManager() {
 
   async function addDomain(event) {
     event.preventDefault();
-    let createdId = null;
     await withBusy(async () => {
-      const payload = { ...form, spf_includes: form.spf_includes.split(/[\s,]+/).filter(Boolean) };
+      // DKIM selectors are provider-defined, not user-defined; the backend
+      // assigns the selector automatically.
+      const payload = { name: form.name, spf_includes: form.spf_includes.split(/[\s,]+/).filter(Boolean) };
       const created = await createDomain(payload);
       setForm(initialForm);
       setSelectedId(created.id);
-      createdId = created.id;
       return created.id;
     });
-    // Kick off the automatic DKIM/SPF/DMARC scan as soon as the domain is added.
-    if (createdId) runAutoScan(createdId);
+    // Do NOT auto-start scanning. The domain stays in a "DNS setup pending"
+    // state until the operator clicks "Start verification".
   }
 
   return (
@@ -187,12 +198,11 @@ export default function DomainManager() {
           <form onSubmit={addDomain}>
             <div className="form-row inline">
               <div><label>Domain name</label><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="example.com" required /></div>
-              <div><label>DKIM selector</label><input value={form.selector} onChange={(event) => setForm({ ...form, selector: event.target.value })} required /></div>
             </div>
             <div className="form-row inline">
               <div><label>SPF includes</label><input value={form.spf_includes} onChange={(event) => setForm({ ...form, spf_includes: event.target.value })} placeholder="include:_spf.example.com" /></div>
             </div>
-            <p className="muted">The DMARC policy is detected automatically from your DNS provider during the scan — no need to choose one.</p>
+            <p className="muted">The DKIM selector is assigned automatically by the provider, and the DMARC policy is detected from your DNS during the scan — no need to choose either.</p>
             <button className="primary" disabled={busy} type="submit">Add domain</button>
           </form>
         </section>
@@ -202,11 +212,16 @@ export default function DomainManager() {
           {selected ? (
             <>
               <div className="card-header"><strong>{selected.name}</strong><StatusBadge status={selected.status} /></div>
+              {!selected.provider_verified && (
+                <div className="notice warning" style={{ marginTop: 8 }}>
+                  DNS setup pending — verify this domain with your email provider before starting the DNS scan.
+                </div>
+              )}
               <div className="actions">
                 {scan && scan.domainId === selected.id && !scan.verified ? (
                   <button className="secondary" onClick={stopScan} type="button">Stop scan</button>
                 ) : (
-                  <button className="primary" onClick={() => runAutoScan(selected.id)} disabled={busy} type="button">Auto-verify</button>
+                  <button className="primary" onClick={() => runAutoScan(selected.id)} disabled={busy || !selected.provider_verified} title={!selected.provider_verified ? 'Domain must be verified with email provider before DNS scan' : undefined} type="button">Start verification</button>
                 )}
                 <button className="secondary" onClick={() => withBusy(async () => setSelected(await verifyDomain(selected.id)))} disabled={busy} type="button">Verify once</button>
                 <button className="secondary" onClick={() => withBusy(async () => { const report = await diagnoseDomain(selected.id); setDiagnosis(report); await loadSelected(selected.id); })} disabled={busy} type="button">Diagnose DNS</button>
@@ -217,6 +232,40 @@ export default function DomainManager() {
               {scan && scan.domainId === selected.id && (
                 <div className={scan.verified ? 'notice success' : 'notice'} style={{ marginTop: 12 }}>{scan.message}</div>
               )}
+
+              <div className="grid two" style={{ marginTop: 16 }}>
+                <div>
+                  <h3>DNS status</h3>
+                  <div className="actions" style={{ flexWrap: 'wrap' }}>
+                    <VerifiedBadge verified={selected.spf_verified} label="SPF" />
+                    <VerifiedBadge verified={selected.dkim_verified} label="DKIM" />
+                    <VerifiedBadge verified={selected.dmarc_verified} label="DMARC" />
+                  </div>
+                </div>
+                <div>
+                  <h3>Provider status</h3>
+                  <div className="actions" style={{ flexWrap: 'wrap' }}>
+                    <VerifiedBadge verified={selected.provider_verified} label={selected.provider_verified ? 'provider verified' : 'provider not verified'} />
+                    <span className="muted">Provider: <strong>{selected.provider_name || 'unknown'}</strong></span>
+                    <VerifiedBadge verified={selected.sending_enabled} label={selected.sending_enabled ? 'sending enabled' : 'sending disabled'} />
+                  </div>
+                </div>
+              </div>
+              <div className={selected.sending_enabled ? 'notice success' : 'notice'} style={{ marginTop: 12 }}>
+                {selected.sending_enabled
+                  ? 'DNS and provider both verified — Send Campaign is enabled for this domain.'
+                  : (dnsValid(selected)
+                    ? 'DNS verified. Awaiting provider confirmation for sending activation.'
+                    : 'Send Campaign stays disabled until both DNS and provider verification pass.')}
+              </div>
+
+              <div className="form-row" style={{ marginTop: 16 }}>
+                <label>DKIM selector (provider-assigned)</label>
+                <div className="actions">
+                  <span className="code">{selected.dkim_selector || 'pending'}</span>
+                  <span className="muted">DKIM selectors are provider-defined and cannot be edited.</span>
+                </div>
+              </div>
               <div className="form-row" style={{ marginTop: 16 }}>
                 <label>DMARC policy (auto-detected)</label>
                 <div className="actions">

@@ -63,14 +63,16 @@ export default function CampaignManager() {
     () => recipientsText.split(/[\s,;]+/).map((value) => value.trim()).filter((value) => value && !EMAIL_RE.test(value)).length,
     [recipientsText]
   );
-  const verifiedDomains = useMemo(() => domains.filter((domain) => domain.is_verified), [domains]);
+  // A domain may only be used to send when BOTH DNS and provider verification
+  // pass — the backend exposes this as sending_enabled.
+  const verifiedDomains = useMemo(() => domains.filter((domain) => domain.sending_enabled), [domains]);
   const sender = domainName ? `${localPart || 'noreply'}@${domainName}` : '';
 
   useEffect(() => {
     async function loadDomains() {
       const data = await getDomains();
       setDomains(data.domains || []);
-      const firstVerified = (data.domains || []).find((domain) => domain.is_verified);
+      const firstVerified = (data.domains || []).find((domain) => domain.sending_enabled);
       setDomainName((current) => current || firstVerified?.name || '');
     }
     loadDomains().catch((err) => setError(err.message));
@@ -312,7 +314,7 @@ export default function CampaignManager() {
         <h2>Verified sender domains</h2>
         <div className="list">
           {verifiedDomains.map((domain) => <div className="list-item" key={domain.id}><strong>{domain.name}</strong><p className="muted">Health score {domain.health_score ?? 'n/a'}</p></div>)}
-          {verifiedDomains.length === 0 && <p className="muted">Only domains with is_verified=true appear here.</p>}
+          {verifiedDomains.length === 0 && <p className="muted">Only domains with sending_enabled=true (DNS verified and provider confirmed) appear here.</p>}
         </div>
       </section>
     </div>
