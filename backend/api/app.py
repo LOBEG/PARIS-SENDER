@@ -780,6 +780,15 @@ def create_app(
         except DomainError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.post("/domains/{domain_id}/verify/live")
+    def live_verify_domain(domain_id: int, domains: DomainService = Depends(get_domain_service)) -> dict[str, Any]:
+        """Live-DNS verification report (dns_resolves/ns/mx/spf/dkim/dmarc,
+        provider_detected, verification_source=live_dns). No placeholder states."""
+        try:
+            return domains.live_verification_report(domain_id)
+        except DomainError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.patch("/domains/{domain_id}/dmarc")
     def update_dmarc(
         domain_id: int, payload: DmarcPolicyUpdate, domains: DomainService = Depends(get_domain_service)

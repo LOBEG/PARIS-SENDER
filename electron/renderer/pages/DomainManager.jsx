@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { autoVerifyDomain, createDomain, deleteDomain, diagnoseDomain, getDomain, getDomainHistory, getDomains, rotateDkim, verifyDomain } from '../api/client.js';
+import { autoVerifyDomain, createDomain, deleteDomain, diagnoseDomain, getDomain, getDomainHistory, getDomains, liveVerifyDomain, rotateDkim, verifyDomain } from '../api/client.js';
 import { StatusBadge, VerifiedBadge } from '../components/Badge.jsx';
 import CopyButton from '../components/CopyButton.jsx';
 import HealthBars from '../components/HealthBars.jsx';
@@ -23,6 +23,7 @@ export default function DomainManager() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [diagnosis, setDiagnosis] = useState(null);
+  const [liveReport, setLiveReport] = useState(null);
   const [scan, setScan] = useState(null);
   const scanTokenRef = useRef(0);
 
@@ -55,6 +56,7 @@ export default function DomainManager() {
 
   useEffect(() => {
     setDiagnosis(null);
+    setLiveReport(null);
     let cancelled = false;
     (async () => {
       try {
@@ -208,6 +210,7 @@ export default function DomainManager() {
                 )}
                 <button className="secondary" onClick={() => withBusy(async () => setSelected(await verifyDomain(selected.id)))} disabled={busy} type="button">Verify once</button>
                 <button className="secondary" onClick={() => withBusy(async () => { const report = await diagnoseDomain(selected.id); setDiagnosis(report); await loadSelected(selected.id); })} disabled={busy} type="button">Diagnose DNS</button>
+                <button className="secondary" onClick={() => withBusy(async () => { const report = await liveVerifyDomain(selected.id); setLiveReport(report); await loadSelected(selected.id); })} disabled={busy} type="button">Live DNS report</button>
                 <button className="secondary" onClick={() => withBusy(async () => setSelected(await rotateDkim(selected.id)))} disabled={busy} type="button">Rotate DKIM</button>
                 <button className="danger" onClick={() => { stopScan(); withBusy(async () => { await deleteDomain(selected.id); setSelectedId(''); setSelected(null); return ''; }); }} disabled={busy} type="button">Delete</button>
               </div>
@@ -253,6 +256,34 @@ export default function DomainManager() {
             {history.length === 0 && <p className="muted">No history returned for this domain yet.</p>}
           </section>
         </div>
+      )}
+
+      {selected && liveReport && liveReport.domain === selected.name && (
+        <section className="card">
+          <div className="card-header">
+            <h2>Live DNS verification</h2>
+            <button className="ghost small" onClick={() => setLiveReport(null)} type="button">Dismiss</button>
+          </div>
+          <p className="muted">
+            Source: <strong>{liveReport.verification_source}</strong> · Provider: <strong>{liveReport.provider_detected || 'Unknown'}</strong> · Checked {liveReport.verification_timestamp}
+          </p>
+          <div className="actions" style={{ flexWrap: 'wrap' }}>
+            <VerifiedBadge verified={liveReport.dns_resolves} label="resolves" />
+            <VerifiedBadge verified={liveReport.mx_present} label="MX" />
+            <VerifiedBadge verified={liveReport.spf_valid} label="SPF" />
+            <VerifiedBadge verified={liveReport.dkim_valid} label="DKIM" />
+            <VerifiedBadge verified={liveReport.dmarc_valid} label="DMARC" />
+          </div>
+          {Object.keys(liveReport.errors || {}).length > 0 ? (
+            <div className="notice warning" style={{ marginTop: 12 }}>
+              <ul className="send-reasons">
+                {Object.entries(liveReport.errors).map(([key, message]) => <li key={key}>{message}</li>)}
+              </ul>
+            </div>
+          ) : (
+            <div className="notice success" style={{ marginTop: 12 }}>All authentication records verified against live DNS.</div>
+          )}
+        </section>
       )}
 
       {selected && diagnosis && (
