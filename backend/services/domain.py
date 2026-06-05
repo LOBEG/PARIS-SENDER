@@ -464,8 +464,8 @@ class DomainService:
         if published is None:
             try:
                 published = self.resolver.resolve_txt(record.host)
-            except Exception as exc:  # pragma: no cover - defensive
-                return False, str(exc)
+            except Exception:  # pragma: no cover - defensive
+                return False, f"DNS lookup failed for '{record.host}'."
         if lookup_error is not None:
             return False, lookup_error
         if not published:
