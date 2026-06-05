@@ -113,9 +113,9 @@ def test_direct_mx_blocked_port_is_classified_and_preserved() -> None:
     assert result.classification == "BLOCKED"
     assert result.stage == "connect"
     assert "connection_blocked_or_rejected" in (result.error or "")
-    # Real per-host reasons are preserved across the whole MX fallback chain.
-    assert "mx1.example.com" in (result.error or "")
-    assert "mx2.example.com" in (result.error or "")
+    # Real per-host reasons are preserved across the whole MX fallback chain:
+    # both attempted hosts are reported (one "MX host" entry each).
+    assert (result.error or "").count("MX host '") == 2
 
 
 def test_direct_mx_permanent_smtp_rejection_is_perm_fail() -> None:

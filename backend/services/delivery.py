@@ -362,7 +362,14 @@ class DirectMxDeliveryProvider(DeliveryProvider):
                     pass
 
     def _aggregate_failures(self, domain: str, failures: list[DeliveryResult]) -> DeliveryResult:
-        """Combine per-host failures into one classified result for the chain."""
+        """Combine per-host failures into one classified result for the chain.
+
+        Classification precedence is retry-biased so the chain is only declared
+        permanently failed when *every* host gave a permanent answer: if all
+        hosts were BLOCKED we surface the explicit block, otherwise any BLOCKED
+        or TEMP_FAIL host makes the whole attempt retryable (TEMP_FAIL), and only
+        an all-permanent chain is reported as PERM_FAIL.
+        """
         details = "; ".join(f.error for f in failures if f.error)
         classifications = {f.classification for f in failures}
         if failures and classifications == {BLOCKED}:
