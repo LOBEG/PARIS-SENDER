@@ -671,6 +671,14 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _domain_payload(domains, domain)
 
+    @app.post("/domains/{domain_id}/auto-verify")
+    def auto_verify_domain(domain_id: int, domains: DomainService = Depends(get_domain_service)) -> dict[str, Any]:
+        try:
+            domain = domains.auto_verify_domain(domain_id)
+        except DomainError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return _domain_payload(domains, domain)
+
     @app.post("/domains/{domain_id}/diagnose")
     def diagnose_domain(domain_id: int, domains: DomainService = Depends(get_domain_service)) -> dict[str, Any]:
         try:

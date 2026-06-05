@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import base64
 import re
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
@@ -38,14 +39,37 @@ class DnsResolver(Protocol):
         ...
 
 
-class DnspythonResolver:
-    """Default resolver backed by dnspython."""
+# Public DNS resolvers queried (in addition to the system default) so a freshly
+# published record is found as soon as any major resolver has it, instead of
+# waiting for the operator's local resolver cache to expire. Aggregating across
+# resolvers is what gives the auto-scan its high hit rate during propagation.
+_PUBLIC_DNS_RESOLVERS: tuple[tuple[str, ...], ...] = (
+    ("8.8.8.8", "8.8.4.4"),  # Google
+    ("1.1.1.1", "1.0.0.1"),  # Cloudflare
+    ("9.9.9.9",),  # Quad9
+)
 
-    def resolve_txt(self, host: str) -> list[str]:
+# Per-query bound (seconds). Kept short so an unreachable resolver can never hang
+# the scan; the aggregate stays fast because resolvers are tried independently.
+_DNS_QUERY_TIMEOUT = 3.0
+
+
+class DnspythonResolver:
+    """Default resolver backed by dnspython.
+
+    Queries the system resolver first and then a set of public resolvers,
+    aggregating and de-duplicating the TXT strings found. Every lookup is bounded
+    by an explicit timeout so a slow or unreachable name server can never make the
+    verification scan hang.
+    """
+
+    def _query_txt(self, resolver: object, host: str) -> list[str]:
         import dns.resolver  # imported lazily so the dependency is optional in tests
 
         try:
-            answers = dns.resolver.resolve(host, "TXT")
+            answers = resolver.resolve(  # type: ignore[attr-defined]
+                host, "TXT", lifetime=_DNS_QUERY_TIMEOUT
+            )
         except Exception:
             return []
         records: list[str] = []
@@ -57,12 +81,46 @@ class DnspythonResolver:
                 records.append(str(rdata).strip('"'))
         return records
 
+    def resolve_txt(self, host: str) -> list[str]:
+        import dns.resolver  # imported lazily so the dependency is optional in tests
+
+        seen: set[str] = set()
+        aggregated: list[str] = []
+
+        def _absorb(values: list[str]) -> None:
+            for value in values:
+                if value not in seen:
+                    seen.add(value)
+                    aggregated.append(value)
+
+        # System resolver first (honours any local/split-horizon DNS).
+        try:
+            default_resolver = dns.resolver.Resolver()
+            default_resolver.timeout = _DNS_QUERY_TIMEOUT
+            default_resolver.lifetime = _DNS_QUERY_TIMEOUT
+            _absorb(self._query_txt(default_resolver, host))
+        except Exception:
+            pass
+
+        # Then public resolvers, so propagation on any major resolver is detected.
+        for nameservers in _PUBLIC_DNS_RESOLVERS:
+            try:
+                public_resolver = dns.resolver.Resolver(configure=False)
+                public_resolver.nameservers = list(nameservers)
+                public_resolver.timeout = _DNS_QUERY_TIMEOUT
+                public_resolver.lifetime = _DNS_QUERY_TIMEOUT
+                _absorb(self._query_txt(public_resolver, host))
+            except Exception:
+                continue
+
+        return aggregated
+
     def resolve_ns(self, host: str) -> list[str]:
         """Return the authoritative name servers for ``host`` (lower-cased, no trailing dot)."""
         import dns.resolver  # imported lazily so the dependency is optional in tests
 
         try:
-            answers = dns.resolver.resolve(host, "NS")
+            answers = dns.resolver.resolve(host, "NS", lifetime=_DNS_QUERY_TIMEOUT)
         except Exception:
             return []
         servers: list[str] = []
@@ -326,6 +384,35 @@ class DomainService:
         domain.last_checked_at = datetime.now(timezone.utc)
         self._apply_status(domain)
         return self.repository.update(domain)
+
+    def auto_verify_domain(
+        self,
+        domain_id: int,
+        *,
+        attempts: int = 3,
+        interval: float = 2.0,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> Domain:
+        """Repeatedly scan DKIM/SPF/DMARC until the domain verifies or attempts run out.
+
+        DNS records published moments earlier may not be visible on the first
+        lookup, so this retries the scan a small, bounded number of times (with a
+        short pause between tries) and stops as soon as every record matches. The
+        attempt count and interval are bounded so the call always returns quickly
+        and never hangs, while the multi-resolver lookups keep the match rate high.
+        """
+        wait = sleeper or time.sleep
+        bounded_attempts = max(1, min(int(attempts), 6))
+        bounded_interval = max(0.0, min(float(interval), 10.0))
+        domain = self.verify_domain(domain_id)
+        for remaining in range(bounded_attempts - 1):
+            if domain.is_verified:
+                break
+            if bounded_interval:
+                wait(bounded_interval)
+            domain = self.verify_domain(domain_id)
+        return domain
+
 
     def diagnose_domain(self, domain_id: int) -> dict[str, object]:
         """Run a deep, accurate per-record DNS search with provider-aware guidance.
