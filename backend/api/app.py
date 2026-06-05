@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from collections.abc import Callable
 from typing import Any
 
@@ -382,14 +383,18 @@ def create_app(
         database_error: str | None = None
         try:
             repository.list_campaigns()
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception:  # pragma: no cover - defensive
             database_ok = False
-            database_error = str(exc)
+            # Avoid leaking internal exception/stack detail to the client; the
+            # full detail is captured in the structured server log instead.
+            database_error = "database probe failed"
+            logger.error(LogComponent.API, "diagnostics database probe failed", details=traceback.format_exc())
 
         try:
             health_snapshot = health_monitor.snapshot()
-        except Exception as exc:  # pragma: no cover - defensive
-            health_snapshot = {"error": str(exc)}
+        except Exception:  # pragma: no cover - defensive
+            health_snapshot = {"error": "health snapshot unavailable"}
+            logger.error(LogComponent.API, "diagnostics health snapshot failed", details=traceback.format_exc())
 
         last_error: dict[str, Any] | None = None
         try:
