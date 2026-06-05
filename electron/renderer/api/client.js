@@ -106,6 +106,8 @@ export async function getHealthWithRetry({ attempts = 30, intervalMs = 1000, onR
   throw lastError || new Error('Backend health check failed');
 }
 export const getHealthStatus = () => get('/health/status');
+export const getDiagnostics = () => get('/diagnostics');
+export const getBackendVersion = () => get('/version');
 export const getDomainHealth = (domain) => get(`/health/domain/${encodeURIComponent(domain)}`);
 export const getServerHealth = (id) => get(`/health/server/${encodeURIComponent(id)}`);
 export const getLogs = (params = {}) => get(`/logs${queryString(params)}`);

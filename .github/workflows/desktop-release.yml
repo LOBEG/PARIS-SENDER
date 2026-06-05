@@ -1,0 +1,76 @@
+name: Desktop release
+
+# Builds the packaged desktop application (backend exe + Electron installer +
+# portable build) and publishes versioned installers and the electron-updater
+# manifest (latest.yml) to GitHub Releases. Triggered by pushing a version tag
+# (e.g. v0.2.1) or manually.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish artifacts to a GitHub Release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r packaging/requirements-build.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install renderer dependencies
+        working-directory: electron
+        run: npm install
+
+      - name: Build backend executable
+        working-directory: electron
+        run: npm run build:backend
+
+      - name: Build renderer
+        working-directory: electron
+        run: npm run build:renderer
+
+      - name: Package and publish installers
+        working-directory: electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag" -or "${{ inputs.publish }}" -eq "true") {
+            npx electron-builder --win --publish always
+          } else {
+            npx electron-builder --win --publish never
+          }
+        shell: pwsh
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            electron/out/*.exe
+            electron/out/*.blockmap
+            electron/out/latest.yml
+          if-no-files-found: warn

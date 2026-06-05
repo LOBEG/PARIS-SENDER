@@ -3,6 +3,7 @@ import { getHealth, getHealthWithRetry } from './api/client.js';
 import Sidebar from './components/Sidebar.jsx';
 import Badge from './components/Badge.jsx';
 import LoadingScreen from './components/LoadingScreen.jsx';
+import UpdateBanner from './components/UpdateBanner.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import CampaignManager from './pages/CampaignManager.jsx';
 import ComposeEditor from './pages/ComposeEditor.jsx';
@@ -15,8 +16,9 @@ import Deliverability from './pages/Deliverability.jsx';
 import Warmup from './pages/Warmup.jsx';
 import HealthMonitor from './pages/HealthMonitor.jsx';
 import ServerLogs from './pages/ServerLogs.jsx';
+import Diagnostics from './pages/Diagnostics.jsx';
 
-const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Backend Logs', 'Domains', 'Deliverability', 'Warmup', 'Health'];
+const screens = ['Dashboard', 'Campaigns', 'Compose', 'Contacts', 'Analytics', 'Settings', 'Logs', 'Backend Logs', 'Domains', 'Deliverability', 'Warmup', 'Health', 'Diagnostics'];
 
 export default function App() {
   const [active, setActive] = useState('Dashboard');
@@ -95,6 +97,7 @@ export default function App() {
       case 'Deliverability': return <Deliverability />;
       case 'Warmup': return <Warmup />;
       case 'Health': return <HealthMonitor />;
+      case 'Diagnostics': return <Diagnostics />;
       default: return <Dashboard onNavigate={setActive} />;
     }
   }, [active]);
@@ -129,6 +132,7 @@ export default function App() {
           </div>
         </header>
         {health.error && <div className="notice danger">Backend health check failed: {health.error}</div>}
+        <UpdateBanner />
         {page}
       </main>
     </div>

@@ -110,3 +110,37 @@ button.small { padding: 7px 10px; font-size: 12px; }
 .boot-message { margin: 0; color: #cbd5e1; font-size: 15px; }
 .boot-error { color: #fecaca; font-weight: 700; }
 .boot-detail { margin: 0; font-size: 13px; word-break: break-word; }
+
+/* Auto-update banner + diagnostics panel (Part 1 / Part 5) */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.update-banner .primary {
+  white-space: nowrap;
+}
+.update-notes {
+  margin-top: 0.5rem;
+}
+.update-notes pre {
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0;
+}
+.diag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.diag-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
