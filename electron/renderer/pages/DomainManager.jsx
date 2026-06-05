@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createDomain, deleteDomain, getDomain, getDomainHistory, getDomains, rotateDkim, updateDmarcPolicy, verifyDomain } from '../api/client.js';
+import { createDomain, deleteDomain, diagnoseDomain, getDomain, getDomainHistory, getDomains, rotateDkim, updateDmarcPolicy, verifyDomain } from '../api/client.js';
 import { StatusBadge, VerifiedBadge } from '../components/Badge.jsx';
 import CopyButton from '../components/CopyButton.jsx';
 import HealthBars from '../components/HealthBars.jsx';
@@ -15,6 +15,7 @@ export default function DomainManager() {
   const [policy, setPolicy] = useState('none');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [diagnosis, setDiagnosis] = useState(null);
 
   const selectedRecords = useMemo(() => selected?.records || [], [selected]);
 
@@ -41,6 +42,7 @@ export default function DomainManager() {
   }, []);
 
   useEffect(() => {
+    setDiagnosis(null);
     loadSelected(selectedId).catch((err) => setError(err.message));
   }, [selectedId]);
 
@@ -121,6 +123,7 @@ export default function DomainManager() {
               <div className="card-header"><strong>{selected.name}</strong><StatusBadge status={selected.status} /></div>
               <div className="actions">
                 <button className="primary" onClick={() => withBusy(async () => setSelected(await verifyDomain(selected.id)))} disabled={busy} type="button">Verify</button>
+                <button className="secondary" onClick={() => withBusy(async () => { const report = await diagnoseDomain(selected.id); setDiagnosis(report); await loadSelected(selected.id); })} disabled={busy} type="button">Diagnose DNS</button>
                 <button className="secondary" onClick={() => withBusy(async () => setSelected(await rotateDkim(selected.id)))} disabled={busy} type="button">Rotate DKIM</button>
                 <button className="danger" onClick={() => withBusy(async () => { await deleteDomain(selected.id); setSelectedId(''); setSelected(null); return ''; })} disabled={busy} type="button">Delete</button>
               </div>
@@ -162,6 +165,34 @@ export default function DomainManager() {
             {history.length === 0 && <p className="muted">No history returned for this domain yet.</p>}
           </section>
         </div>
+      )}
+
+      {selected && diagnosis && (
+        <section className="card">
+          <div className="card-header">
+            <h2>DNS diagnosis</h2>
+            <button className="ghost small" onClick={() => setDiagnosis(null)} type="button">Dismiss</button>
+          </div>
+          <p className="muted">
+            Detected provider: <strong>{diagnosis.provider?.provider || 'Unknown'}</strong>
+            {diagnosis.provider?.nameservers?.length ? ` (${diagnosis.provider.nameservers.join(', ')})` : ''}
+          </p>
+          {diagnosis.provider?.guidance && <div className="notice">{diagnosis.provider.guidance}</div>}
+          <div className={diagnosis.failing_count === 0 ? 'notice success' : 'notice warning'}>{diagnosis.summary}</div>
+          <table className="table">
+            <thead><tr><th>Type</th><th>Host</th><th>Status</th><th>Diagnosis</th></tr></thead>
+            <tbody>
+              {(diagnosis.records || []).map((record) => (
+                <tr key={`diag-${record.record_type}-${record.host}`}>
+                  <td>{record.record_type}</td>
+                  <td className="code">{record.host}</td>
+                  <td>{record.verified ? <VerifiedBadge verified label="ok" /> : <VerifiedBadge verified={false} label="failing" />}</td>
+                  <td>{record.verified ? <span className="muted">Published correctly.</span> : <span>{record.hint || record.error}</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       )}
     </div>
   );
