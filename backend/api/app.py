@@ -221,6 +221,9 @@ def create_app(
     rate_limit_window_seconds: int = 60,
     enable_cors: bool = True,
     cors_origins: list[str] | None = None,
+    delivery_max_attempts: int = 3,
+    delivery_backoff_base: float = 0.5,
+    delivery_backoff_factor: float = 2.0,
 ) -> FastAPI:
     """Create a FastAPI app with injectable services and opt-in security controls."""
     app = FastAPI(title="Paris Sender Backend")
@@ -532,7 +535,14 @@ def create_app(
             smtp_provider=delivery_provider,
             non_smtp_provider=non_smtp_delivery_provider,
         )
-        service = DeliveryService(repo, selected_provider, logger=logger)
+        service = DeliveryService(
+            repo,
+            selected_provider,
+            logger=logger,
+            max_attempts=delivery_max_attempts,
+            backoff_base=delivery_backoff_base,
+            backoff_factor=delivery_backoff_factor,
+        )
         receipts = service.send_campaign(
             campaign,
             payload.recipients,
@@ -547,6 +557,18 @@ def create_app(
             warmup.record_execution(sender_domain, campaign_id, len(receipts))
         sent = sum(1 for receipt in receipts if receipt.result.success)
         failed = sum(1 for receipt in receipts if not receipt.result.success)
+        # Surface the real, provider-sourced reason for every failure so the UI
+        # never has to show an opaque "failed" with no explanation.
+        failures = [
+            {
+                "message_id": receipt.message.id,
+                "recipient": receipt.recipient.email,
+                "error": receipt.result.error or "delivery failed (no provider detail)",
+                "attempts": receipt.attempts,
+            }
+            for receipt in receipts
+            if not receipt.result.success
+        ]
         logger.log(
             LogComponent.CAMPAIGN,
             LogSeverity.ERROR if failed else LogSeverity.INFO,
@@ -563,6 +585,7 @@ def create_app(
             "sent": sent,
             "failed": failed,
             "messages": [receipt.message.id for receipt in receipts],
+            "failures": failures,
             "delivery_channel": delivery_channel,
         }
 
@@ -607,6 +630,26 @@ def create_app(
             "id": campaign.id,
             "name": campaign.name,
             "status_rollups": {status.value: rollups.get(status, 0) for status in Status},
+        }
+
+    @app.get("/campaigns/{campaign_id}/messages")
+    def list_campaign_messages(campaign_id: int, repo: LedgerRepository = Depends(get_repository)) -> dict[str, Any]:
+        """Per-message delivery status with the real, latest provider error.
+
+        This is the end-to-end observability view: every message's current
+        status, provider message id, and (for failures) the precise reason
+        recorded in the ledger. Messages with status FAILED are the inspectable
+        dead-letter set."""
+        campaign = repo.get_campaign(campaign_id)
+        if campaign is None:
+            raise HTTPException(status_code=404, detail="campaign not found")
+        messages = repo.list_message_statuses(campaign_id)
+        failed = [m for m in messages if m["status"] == Status.FAILED.value]
+        return {
+            "campaign_id": campaign_id,
+            "messages": messages,
+            "failed_count": len(failed),
+            "dead_letter": failed,
         }
 
     @app.delete("/campaigns/{campaign_id}")

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import smtplib
 import ssl
+import time
+import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -43,6 +45,7 @@ class SendReceipt:
     recipient: Recipient
     message: Message
     result: DeliveryResult
+    attempts: int = 1
 
 
 class DeliveryProvider(ABC):
@@ -300,10 +303,133 @@ class DirectMxDeliveryProvider(DeliveryProvider):
 class DeliveryService:
     """Orchestrates ledger writes and delegates network delivery to providers."""
 
-    def __init__(self, ledger: LedgerRepository, provider: DeliveryProvider, logger: Any | None = None) -> None:
+    def __init__(
+        self,
+        ledger: LedgerRepository,
+        provider: DeliveryProvider,
+        logger: Any | None = None,
+        *,
+        max_attempts: int = 1,
+        backoff_base: float = 0.5,
+        backoff_factor: float = 2.0,
+        backoff_cap: float = 30.0,
+        sleeper: Callable[[float], None] | None = None,
+    ) -> None:
         self.ledger = ledger
         self.provider = provider
         self.logger = logger
+        # Retry policy. ``max_attempts == 1`` preserves the original single-shot
+        # behaviour; values > 1 enable exponential backoff between attempts.
+        self.max_attempts = max(1, int(max_attempts))
+        self.backoff_base = max(0.0, float(backoff_base))
+        self.backoff_factor = max(1.0, float(backoff_factor))
+        self.backoff_cap = max(0.0, float(backoff_cap))
+        self._sleep = sleeper or time.sleep
+
+    def _backoff_delay(self, attempt: int) -> float:
+        """Return the delay (seconds) to wait before retry ``attempt`` (1-indexed retry)."""
+        if self.backoff_base <= 0:
+            return 0.0
+        delay = self.backoff_base * (self.backoff_factor ** (attempt - 1))
+        return min(delay, self.backoff_cap) if self.backoff_cap else delay
+
+    def _attempt_send(self, outbound: "OutboundMessage") -> DeliveryResult:
+        """Call the provider once, converting an unexpected exception into a
+        failed :class:`DeliveryResult` carrying the error so the reason is never
+        silently swallowed. Kept as a small, reusable seam for callers that want
+        a single attempt without the retry loop."""
+        try:
+            return self.provider.send(outbound)
+        except Exception as exc:  # noqa: BLE001 - surface provider crash as a real failure reason
+            return DeliveryResult(success=False, error=f"{type(exc).__name__}: {exc}")
+
+    def _deliver_with_retries(
+        self,
+        message: Message,
+        outbound: "OutboundMessage",
+        *,
+        campaign_id: int,
+        delivery_channel: str | None,
+    ) -> tuple[DeliveryResult, int]:
+        """Attempt delivery up to ``max_attempts`` times with exponential backoff.
+
+        Every attempt is recorded; failures are logged with structured,
+        actionable diagnostics (campaign/message id, recipient, provider
+        response, retry count, and a stack trace when one is available). Returns
+        the final result and the number of attempts made.
+        """
+        result = DeliveryResult(success=False, error="delivery not attempted")
+        attempts = 0
+        for attempt in range(1, self.max_attempts + 1):
+            attempts = attempt
+            try:
+                result = self.provider.send(outbound)
+            except Exception as exc:  # noqa: BLE001 - never hide a provider crash
+                result = DeliveryResult(
+                    success=False,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                self._log_failure(
+                    message,
+                    outbound.recipient,
+                    result,
+                    attempt=attempt,
+                    campaign_id=campaign_id,
+                    delivery_channel=delivery_channel,
+                    stack=traceback.format_exc(),
+                )
+            else:
+                if result.success:
+                    return result, attempts
+                self._log_failure(
+                    message,
+                    outbound.recipient,
+                    result,
+                    attempt=attempt,
+                    campaign_id=campaign_id,
+                    delivery_channel=delivery_channel,
+                    stack=None,
+                )
+            if attempt < self.max_attempts:
+                delay = self._backoff_delay(attempt)
+                if delay > 0:
+                    self._sleep(delay)
+        return result, attempts
+
+    def _log_failure(
+        self,
+        message: Message,
+        recipient: str,
+        result: DeliveryResult,
+        *,
+        attempt: int,
+        campaign_id: int,
+        delivery_channel: str | None,
+        stack: str | None,
+    ) -> None:
+        if self.logger is None:
+            return
+        final = attempt >= self.max_attempts
+        context: dict[str, Any] = {
+            "campaign_id": campaign_id,
+            "message_id": message.id,
+            "recipient": recipient,
+            "provider_response": result.error,
+            "provider_message_id": result.provider_message_id,
+            "attempt": attempt,
+            "max_attempts": self.max_attempts,
+            "final": final,
+        }
+        if delivery_channel is not None:
+            context["delivery_channel"] = delivery_channel
+        if stack:
+            context["stack_trace"] = stack
+        self.logger.log(
+            LogComponent.DELIVERY,
+            "ERROR" if final else "WARNING",
+            "message delivery attempt failed" if not final else "message delivery failed after retries",
+            **context,
+        )
 
     def send_campaign(
         self,
@@ -340,26 +466,30 @@ class DeliveryService:
             )
             self._record(message, Status.QUEUED)
             self._record(message, Status.PROCESSING)
-            try:
-                result = self.provider.send(
-                    OutboundMessage(
-                        sender=sender,
-                        recipient=email,
-                        subject=subject,
-                        content=content,
-                        html=html,
-                        attachments=attachment_list,
-                    )
-                )
-                if result.success:
-                    self._record(message, Status.SENT, provider_message_id=result.provider_message_id)
-                else:
-                    self._record(message, Status.FAILED, error=result.error)
-            except Exception as exc:
-                result = DeliveryResult(success=False, error=str(exc))
-                self._record(message, Status.FAILED, error=str(exc))
+            result, attempts = self._deliver_with_retries(
+                message,
+                OutboundMessage(
+                    sender=sender,
+                    recipient=email,
+                    subject=subject,
+                    content=content,
+                    html=html,
+                    attachments=attachment_list,
+                ),
+                campaign_id=persisted_campaign.id,
+                delivery_channel=delivery_channel,
+            )
+            if result.success:
+                self._record(message, Status.SENT, provider_message_id=result.provider_message_id)
+            else:
+                # Real, provider-sourced failure reason is persisted to the ledger
+                # (events table) so it is queryable end-to-end. Messages that stay
+                # FAILED form the inspectable dead-letter set.
+                self._record(message, Status.FAILED, error=result.error)
             updated_message = self.ledger.get_message(message.id or 0) or message
-            receipts.append(SendReceipt(recipient=recipient, message=updated_message, result=result))
+            receipts.append(
+                SendReceipt(recipient=recipient, message=updated_message, result=result, attempts=attempts)
+            )
         if self.logger is not None:
             sent = sum(1 for receipt in receipts if receipt.result.success)
             failed = len(receipts) - sent

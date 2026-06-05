@@ -113,6 +113,7 @@ export const getLogSummary = () => get('/logs/summary');
 export const createCampaign = (name) => post('/campaigns', { name });
 export const listCampaigns = () => get('/campaigns');
 export const getCampaign = (id) => get(`/campaigns/${encodeURIComponent(id)}`);
+export const getCampaignMessages = (id) => get(`/campaigns/${encodeURIComponent(id)}/messages`);
 export const deleteCampaign = (id) => del(`/campaigns/${encodeURIComponent(id)}`);
 export const getCampaignScore = (id) => get(`/campaigns/${encodeURIComponent(id)}/score`);
 export const predictCampaign = (id, payload) => post(`/campaigns/${encodeURIComponent(id)}/predict`, payload);
