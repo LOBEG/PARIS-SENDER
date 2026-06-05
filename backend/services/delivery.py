@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import smtplib
+import socket
 import ssl
 import time
 import traceback
@@ -31,11 +33,30 @@ class OutboundMessage:
 
 @dataclass(slots=True)
 class DeliveryResult:
-    """Provider delivery result."""
+    """Provider delivery result.
+
+    ``classification`` and ``stage`` are optional, observability-oriented fields
+    used by the direct-to-MX (non-SMTP) path so callers can distinguish a
+    retryable temporary failure from a permanent one or a network/port block:
+
+    * ``classification`` is one of :data:`TEMP_FAIL`, :data:`PERM_FAIL`, or
+      :data:`BLOCKED` (``None`` on success or when a provider does not classify).
+    * ``stage`` names where the failure happened (``"mx"``, ``"connect"``,
+      ``"smtp"``, or ``"recipient"``).
+    """
 
     success: bool
     provider_message_id: str | None = None
     error: str | None = None
+    classification: str | None = None
+    stage: str | None = None
+
+
+# Failure classifications for delivery results. These let the UI and the retry
+# layer reason about *why* a send failed instead of treating every error the same.
+TEMP_FAIL = "TEMP_FAIL"  # transient (greylisting, 4xx, timeout): safe to retry later
+PERM_FAIL = "PERM_FAIL"  # permanent (invalid domain, no MX, 5xx): retrying will not help
+BLOCKED = "BLOCKED"  # network/provider restriction (port 25 blocked, connection refused)
 
 
 @dataclass(slots=True)
@@ -78,6 +99,25 @@ class SMTPConfig:
 
 
 SMTPFactory = Callable[[SMTPConfig, ssl.SSLContext], SMTPClient]
+
+
+# OS-level error numbers that indicate the network path to the MX host is
+# blocked/refused (port 25 firewalled, host unreachable, connection reset) rather
+# than a transient server condition. Used to classify direct-MX failures as BLOCKED.
+_BLOCKED_ERRNOS: frozenset[int] = frozenset(
+    code
+    for code in (
+        getattr(errno, "ECONNREFUSED", None),
+        getattr(errno, "ETIMEDOUT", None),
+        getattr(errno, "ENETUNREACH", None),
+        getattr(errno, "EHOSTUNREACH", None),
+        getattr(errno, "ECONNRESET", None),
+        getattr(errno, "ENETDOWN", None),
+        getattr(errno, "EHOSTDOWN", None),
+        getattr(errno, "ECONNABORTED", None),
+    )
+    if code is not None
+)
 
 
 class NonSmtpDeliveryProvider(DeliveryProvider):
@@ -248,13 +288,31 @@ class DirectMxDeliveryProvider(DeliveryProvider):
         self.smtp_factory = smtp_factory or self._default_smtp_factory
 
     def send(self, message: OutboundMessage) -> DeliveryResult:
-        """Resolve the recipient's MX hosts and deliver to the first that accepts."""
+        """Resolve the recipient's MX hosts and deliver to the first that accepts.
+
+        Failures are never collapsed into a generic "failed": a missing MX record
+        yields a permanent ``no_mx_records_found`` error, a blocked/refused port 25
+        yields ``connection_blocked_or_rejected`` (BLOCKED), and the real per-host
+        reason is preserved across the whole MX fallback chain. Every returned
+        result carries a ``classification`` (TEMP_FAIL/PERM_FAIL/BLOCKED) so the
+        retry layer and UI can act on it.
+        """
         domain = message.recipient.split("@", 1)[1].strip().lower() if "@" in message.recipient else ""
         if not domain:
-            return DeliveryResult(success=False, error=f"invalid recipient address: {message.recipient!r}")
+            return DeliveryResult(
+                success=False,
+                error=f"invalid_recipient: invalid recipient address: {message.recipient!r}",
+                classification=PERM_FAIL,
+                stage="recipient",
+            )
         hosts = self.mx_resolver.resolve_mx(domain)
         if not hosts:
-            return DeliveryResult(success=False, error=f"no MX records found for domain {domain!r}")
+            return DeliveryResult(
+                success=False,
+                error=f"no_mx_records_found: no MX records found for domain {domain!r}",
+                classification=PERM_FAIL,
+                stage="mx",
+            )
         mime_message = build_mime_message(
             message.sender,
             message.recipient,
@@ -264,23 +322,96 @@ class DirectMxDeliveryProvider(DeliveryProvider):
             attachments=message.attachments,
         )
         context = self._build_ssl_context()
-        last_error: str | None = None
+        # Try each MX host in preference order; keep the real, classified reason
+        # for every host so an exhausted chain still explains exactly what failed.
+        failures: list[DeliveryResult] = []
         for host in hosts:
-            client: SMTPClient | None = None
-            try:
-                client = self.smtp_factory(host, self.config, context)
-                client.send_message(mime_message)
-                provider_id = mime_message.get("Message-ID") or f"mx:{host}:{message.recipient}"
-                return DeliveryResult(success=True, provider_message_id=provider_id)
-            except Exception as exc:  # try the next MX host on failure
-                last_error = str(exc)
-            finally:
-                if client is not None:
-                    try:
-                        client.quit()
-                    except Exception:
-                        pass
-        return DeliveryResult(success=False, error=last_error or f"delivery to MX hosts failed for {domain!r}")
+            result = self._deliver_to_host(host, mime_message, message, context)
+            if result.success:
+                return result
+            failures.append(result)
+        return self._aggregate_failures(domain, failures)
+
+    def _deliver_to_host(
+        self,
+        host: str,
+        mime_message: Any,
+        message: OutboundMessage,
+        context: ssl.SSLContext,
+    ) -> DeliveryResult:
+        """Attempt delivery to a single MX host, returning a classified result."""
+        client: SMTPClient | None = None
+        try:
+            client = self.smtp_factory(host, self.config, context)
+            client.send_message(mime_message)
+            provider_id = mime_message.get("Message-ID") or f"mx:{host}:{message.recipient}"
+            return DeliveryResult(success=True, provider_message_id=provider_id)
+        except Exception as exc:  # try the next MX host on failure
+            classification, stage, code = self._classify_exception(exc)
+            return DeliveryResult(
+                success=False,
+                error=f"{code}: MX host {host!r}: {exc}",
+                classification=classification,
+                stage=stage,
+            )
+        finally:
+            if client is not None:
+                try:
+                    client.quit()
+                except Exception:
+                    pass
+
+    def _aggregate_failures(self, domain: str, failures: list[DeliveryResult]) -> DeliveryResult:
+        """Combine per-host failures into one classified result for the chain."""
+        details = "; ".join(f.error for f in failures if f.error)
+        classifications = {f.classification for f in failures}
+        if failures and classifications == {BLOCKED}:
+            classification = BLOCKED
+            code = "connection_blocked_or_rejected"
+        elif BLOCKED in classifications or TEMP_FAIL in classifications:
+            classification = TEMP_FAIL
+            code = "temporary_delivery_failure"
+        else:
+            classification = PERM_FAIL
+            code = "permanent_delivery_failure"
+        stage = failures[-1].stage if failures else "mx"
+        return DeliveryResult(
+            success=False,
+            error=f"{code}: delivery to all MX hosts failed for {domain!r} [{details}]",
+            classification=classification,
+            stage=stage,
+        )
+
+    @staticmethod
+    def _classify_exception(exc: Exception) -> tuple[str, str, str]:
+        """Map a transport exception to ``(classification, stage, error_code)``.
+
+        Distinguishes a blocked/refused network path (the classic "port 25 is
+        blocked by the host/ISP" case) from a temporary server condition and a
+        permanent SMTP rejection, so retrying only happens when it can help.
+        """
+        # SMTP-level responses carry an authoritative numeric code: 4xx is
+        # transient, 5xx is permanent.
+        if isinstance(exc, (smtplib.SMTPRecipientsRefused, smtplib.SMTPSenderRefused)):
+            return PERM_FAIL, "smtp", "recipient_or_sender_refused"
+        if isinstance(exc, smtplib.SMTPResponseException):
+            code = getattr(exc, "smtp_code", 0) or 0
+            if 400 <= code < 500:
+                return TEMP_FAIL, "smtp", "temporary_smtp_error"
+            if code >= 500:
+                return PERM_FAIL, "smtp", "permanent_smtp_error"
+            return TEMP_FAIL, "smtp", "smtp_error"
+        if isinstance(exc, (smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+            return TEMP_FAIL, "connect", "smtp_connection_failed"
+        if isinstance(exc, ConnectionRefusedError):
+            return BLOCKED, "connect", "connection_blocked_or_rejected"
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return BLOCKED, "connect", "connection_blocked_or_rejected"
+        if isinstance(exc, OSError):
+            if exc.errno in _BLOCKED_ERRNOS:
+                return BLOCKED, "connect", "connection_blocked_or_rejected"
+            return TEMP_FAIL, "connect", "network_error"
+        return TEMP_FAIL, "smtp", "delivery_error"
 
     def _default_smtp_factory(self, host: str, config: DirectMxConfig, context: ssl.SSLContext) -> SMTPClient:
         client: Any = smtplib.SMTP(host, config.port, timeout=config.timeout)

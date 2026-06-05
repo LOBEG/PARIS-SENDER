@@ -650,6 +650,17 @@ class DomainService:
         timestamp = (domain.last_checked_at or datetime.now(timezone.utc)).isoformat()
         detected = provider.provider if provider.provider != "Unknown" else None
 
+        # Authentication strength derived purely from the live SPF/DKIM/DMARC
+        # checks above: "strong" only when all three authenticate, "failed" when
+        # none do, "partial" in between. No record is ever assumed without DNS.
+        auth_valid = sum((domain.spf_verified, domain.dkim_verified, domain.dmarc_verified))
+        if auth_valid == 3:
+            verification_strength = "strong"
+        elif auth_valid == 0:
+            verification_strength = "failed"
+        else:
+            verification_strength = "partial"
+
         return {
             "domain": name,
             "dns_resolves": dns_resolves,
@@ -661,6 +672,7 @@ class DomainService:
             "dkim_selector": domain.metadata.get("dkim_detected_selector"),
             "dmarc_valid": domain.dmarc_verified,
             "dmarc_policy": domain.dmarc_policy if domain.dmarc_verified else None,
+            "verification_strength": verification_strength,
             "provider_detected": detected,
             "nameservers": ns_records,
             "mx_hosts": mx_records,

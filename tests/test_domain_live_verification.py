@@ -50,6 +50,19 @@ def test_live_report_all_valid_uses_live_dns_source() -> None:
     assert report["verification_source"] == "live_dns"
     assert report["verification_timestamp"]
     assert report["errors"] == {}
+    assert report["verification_strength"] == "strong"
+
+
+def test_live_report_verification_strength_partial_and_failed() -> None:
+    # No auth records published at all -> "failed".
+    resolver = FakeResolver(nameservers=["ns1.domaincontrol.com"])
+    domains = _service(resolver)
+    domain = domains.add_domain("example.com")
+    assert domains.live_verification_report(domain.id)["verification_strength"] == "failed"
+
+    # Publish only SPF (one of three) -> "partial".
+    resolver.records = {"example.com": ["v=spf1 a mx ~all"]}
+    assert domains.live_verification_report(domain.id)["verification_strength"] == "partial"
 
 
 def test_live_report_failures_include_precise_explanations() -> None:

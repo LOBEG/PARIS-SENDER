@@ -616,6 +616,8 @@ def create_app(
                 "recipient": receipt.recipient.email,
                 "error": receipt.result.error or "delivery failed (no provider detail)",
                 "attempts": receipt.attempts,
+                "classification": receipt.result.classification,
+                "stage": receipt.result.stage,
             }
             for receipt in receipts
             if not receipt.result.success
